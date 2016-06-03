@@ -24,7 +24,11 @@ import (
 
 // mc configuration related constants.
 const (
-	globalMCConfigVersion = "7"
+	minGoVersion = ">= 1.6" // mc requires at least Go v1.6
+)
+
+const (
+	globalMCConfigVersion = "8"
 
 	globalMCConfigDir        = ".mc/"
 	globalMCConfigWindowsDir = "mc\\"
@@ -33,6 +37,9 @@ const (
 	// session config and shared urls related constants
 	globalSessionDir        = "session"
 	globalSharedURLsDataDir = "share"
+
+	// Profile directory for dumping profiler outputs.
+	globalProfileDir = "profile"
 )
 
 var (
@@ -51,12 +58,12 @@ func setGlobals(quiet, debug, json, noColor bool) {
 	globalNoColor = noColor
 
 	// Enable debug messages if requested.
-	if globalDebug == true {
+	if globalDebug {
 		console.DebugPrint = true
 	}
 
 	// Disable colorified messages if requested.
-	if globalNoColor == true {
+	if globalNoColor {
 		console.SetColorOff()
 	}
 }

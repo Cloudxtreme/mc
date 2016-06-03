@@ -29,6 +29,8 @@ import (
 	"sync"
 	"time"
 
+	"io/ioutil"
+
 	"github.com/minio/mc/pkg/httptracer"
 	"github.com/minio/minio-go"
 	"github.com/minio/minio/pkg/probe"
@@ -50,11 +52,11 @@ func newFactory() func(config *Config) (Client, *probe.Error) {
 	// Return New function.
 	return func(config *Config) (Client, *probe.Error) {
 		// Creates a parsed URL.
-		targetURL := newURL(config.HostURL)
+		targetURL := newClientURL(config.HostURL)
 		// By default enable HTTPs.
-		inSecure := false
+		secure := true
 		if targetURL.Scheme == "http" {
-			inSecure = true
+			secure = false
 		}
 
 		// Instantiate s3
@@ -92,33 +94,32 @@ func newFactory() func(config *Config) (Client, *probe.Error) {
 		if api, found = clientCache[confSum]; !found {
 			// Not found. Instantiate a new minio
 			var e error
-			if config.Signature == "S3v2" {
+			if strings.ToUpper(config.Signature) == "S3V2" {
 				// if Signature version '2' use NewV2 directly.
-				api, e = minio.NewV2(hostName, config.AccessKey, config.SecretKey, inSecure)
+				api, e = minio.NewV2(hostName, config.AccessKey, config.SecretKey, secure)
 			} else {
 				// if Signature version '4' use NewV4 directly.
-				api, e = minio.NewV4(hostName, config.AccessKey, config.SecretKey, inSecure)
+				api, e = minio.NewV4(hostName, config.AccessKey, config.SecretKey, secure)
 			}
 			if e != nil {
 				return nil, probe.NewError(e)
+			}
+			if config.Debug {
+				transport := http.DefaultTransport
+				if config.Signature == "S3v4" {
+					transport = httptracer.GetNewTraceTransport(newTraceV4(), http.DefaultTransport)
+				}
+				if config.Signature == "S3v2" {
+					transport = httptracer.GetNewTraceTransport(newTraceV2(), http.DefaultTransport)
+				}
+				// Set custom transport.
+				api.SetCustomTransport(transport)
 			}
 			// Cache the new minio client with hash of config as key.
 			clientCache[confSum] = api
 		}
 		// Set app info.
 		api.SetAppInfo(config.AppName, config.AppVersion)
-
-		if config.Debug {
-			transport := http.DefaultTransport
-			if config.Signature == "S3v4" {
-				transport = httptracer.GetNewTraceTransport(newTraceV4(), http.DefaultTransport)
-			}
-			if config.Signature == "S3v2" {
-				transport = httptracer.GetNewTraceTransport(newTraceV2(), http.DefaultTransport)
-			}
-			// Set custom transport.
-			api.SetCustomTransport(transport)
-		}
 
 		// Store the new api object.
 		s3Clnt.api = api
@@ -145,9 +146,62 @@ func (c *s3Client) Get() (io.Reader, *probe.Error) {
 		if errResponse.Code == "AccessDenied" {
 			return nil, probe.NewError(PathInsufficientPermission{Path: c.targetURL.String()})
 		}
+		if errResponse.Code == "NoSuchBucket" {
+			return nil, probe.NewError(BucketDoesNotExist{
+				Bucket: bucket,
+			})
+		}
+		if errResponse.Code == "InvalidBucketName" {
+			return nil, probe.NewError(BucketInvalid{
+				Bucket: bucket,
+			})
+		}
+		if errResponse.Code == "NoSuchKey" || errResponse.Code == "InvalidArgument" {
+			return nil, probe.NewError(ObjectMissing{})
+		}
 		return nil, probe.NewError(e)
 	}
 	return reader, nil
+}
+
+// Copy - copy object
+func (c *s3Client) Copy(source string, size int64, progress io.Reader) *probe.Error {
+	bucket, object := c.url2BucketAndObject()
+	if bucket == "" {
+		return probe.NewError(BucketNameEmpty{})
+	}
+	// Empty copy conditions
+	copyConds := minio.NewCopyConditions()
+	e := c.api.CopyObject(bucket, object, source, copyConds)
+	if e != nil {
+		errResponse := minio.ToErrorResponse(e)
+		if errResponse.Code == "AccessDenied" {
+			return probe.NewError(PathInsufficientPermission{
+				Path: c.targetURL.String(),
+			})
+		}
+		if errResponse.Code == "NoSuchBucket" {
+			return probe.NewError(BucketDoesNotExist{
+				Bucket: bucket,
+			})
+		}
+		if errResponse.Code == "InvalidBucketName" {
+			return probe.NewError(BucketInvalid{
+				Bucket: bucket,
+			})
+		}
+		if errResponse.Code == "NoSuchKey" || errResponse.Code == "InvalidArgument" {
+			return probe.NewError(ObjectMissing{})
+		}
+		return probe.NewError(e)
+	}
+	// Successful copy update progress bar if there is one.
+	if progress != nil {
+		if _, e := io.CopyN(ioutil.Discard, progress, size); e != nil {
+			return probe.NewError(e)
+		}
+	}
+	return nil
 }
 
 // Put - put object.
@@ -159,6 +213,9 @@ func (c *s3Client) Put(reader io.Reader, size int64, contentType string, progres
 	bucket, object := c.url2BucketAndObject()
 	if contentType == "" {
 		contentType = "application/octet-stream"
+	}
+	if bucket == "" {
+		return 0, probe.NewError(BucketNameEmpty{})
 	}
 	n, e := c.api.PutObjectWithProgress(bucket, object, reader, contentType, progress)
 	if e != nil {
@@ -184,7 +241,12 @@ func (c *s3Client) Put(reader io.Reader, size int64, contentType string, progres
 				Bucket: bucket,
 			})
 		}
-		if errResponse.Code == "InvalidArgument" {
+		if errResponse.Code == "InvalidBucketName" {
+			return n, probe.NewError(BucketInvalid{
+				Bucket: bucket,
+			})
+		}
+		if errResponse.Code == "NoSuchKey" || errResponse.Code == "InvalidArgument" {
 			return n, probe.NewError(ObjectMissing{})
 		}
 		return n, probe.NewError(e)
@@ -237,39 +299,33 @@ func (c *s3Client) MakeBucket(region string) *probe.Error {
 	if err := isValidBucketName(bucket); err != nil {
 		return err.Trace(bucket)
 	}
-	e := c.api.MakeBucket(bucket, minio.BucketACL("private"), region)
+	e := c.api.MakeBucket(bucket, region)
 	if e != nil {
 		return probe.NewError(e)
 	}
 	return nil
 }
 
-// GetBucketAccess get acl on a bucket.
-func (c *s3Client) GetBucketAccess() (acl string, err *probe.Error) {
+// GetAccess get access policy permissions.
+func (c *s3Client) GetAccess() (string, *probe.Error) {
 	bucket, object := c.url2BucketAndObject()
-	if object != "" {
-		return "", probe.NewError(InvalidBucketName{Bucket: filepath.Join(bucket, object)})
-	}
 	if bucket == "" {
 		return "", probe.NewError(BucketNameEmpty{})
 	}
-	bucketACL, e := c.api.GetBucketACL(bucket)
+	bucketPolicy, e := c.api.GetBucketPolicy(bucket, object)
 	if e != nil {
 		return "", probe.NewError(e)
 	}
-	return bucketACL.String(), nil
+	return string(bucketPolicy), nil
 }
 
-// SetBucketAccess set acl on a bucket
-func (c *s3Client) SetBucketAccess(acl string) *probe.Error {
+// SetAccess set access policy permissions.
+func (c *s3Client) SetAccess(bucketPolicy string) *probe.Error {
 	bucket, object := c.url2BucketAndObject()
-	if object != "" {
-		return probe.NewError(InvalidBucketName{Bucket: filepath.Join(bucket, object)})
-	}
 	if bucket == "" {
 		return probe.NewError(BucketNameEmpty{})
 	}
-	e := c.api.SetBucketACL(bucket, minio.BucketACL(acl))
+	e := c.api.SetBucketPolicy(bucket, object, minio.BucketPolicy(bucketPolicy))
 	if e != nil {
 		return probe.NewError(e)
 	}
@@ -281,59 +337,52 @@ func (c *s3Client) Stat() (*clientContent, *probe.Error) {
 	c.mutex.Lock()
 	objectMetadata := &clientContent{}
 	bucket, object := c.url2BucketAndObject()
-	switch {
-	// valid case for 'ls -r s3/'
-	case bucket == "" && object == "":
-		_, e := c.api.ListBuckets()
+	// Bucket name cannot be empty, stat on URL has no meaning.
+	if bucket == "" {
+		c.mutex.Unlock()
+		return nil, probe.NewError(BucketNameEmpty{})
+	} else if object == "" {
+		e := c.api.BucketExists(bucket)
 		if e != nil {
 			c.mutex.Unlock()
 			return nil, probe.NewError(e)
 		}
+		bucketMetadata := &clientContent{}
+		bucketMetadata.URL = *c.targetURL
+		bucketMetadata.Type = os.ModeDir
 		c.mutex.Unlock()
-		return &clientContent{URL: *c.targetURL, Type: os.ModeDir}, nil
+		return bucketMetadata, nil
 	}
-	if object != "" {
-		metadata, e := c.api.StatObject(bucket, object)
-		if e != nil {
-			c.mutex.Unlock()
-			errResponse := minio.ToErrorResponse(e)
-			if errResponse.Code == "NoSuchKey" {
-				// Append "/" to the object name proactively and see if the Listing
-				// produces an output. If yes, then we treat it as a directory.
-				prefixName := object
-				// Trim any trailing separators and add it.
-				prefixName = strings.TrimSuffix(prefixName, string(c.targetURL.Separator)) + string(c.targetURL.Separator)
-				isRecursive := false
-				for objectStat := range c.api.ListObjects(bucket, prefixName, isRecursive, nil) {
-					if objectStat.Err != nil {
-						return nil, probe.NewError(objectStat.Err)
-					}
-					content := clientContent{}
-					content.URL = *c.targetURL
-					content.Type = os.ModeDir
-					return &content, nil
-				}
-				return nil, probe.NewError(PathNotFound{Path: c.targetURL.Path})
-			}
-			return nil, probe.NewError(e)
-		}
-		objectMetadata.URL = *c.targetURL
-		objectMetadata.Time = metadata.LastModified
-		objectMetadata.Size = metadata.Size
-		objectMetadata.Type = os.FileMode(0664)
-		c.mutex.Unlock()
-		return objectMetadata, nil
-	}
-	e := c.api.BucketExists(bucket)
+	metadata, e := c.api.StatObject(bucket, object)
 	if e != nil {
 		c.mutex.Unlock()
+		errResponse := minio.ToErrorResponse(e)
+		if errResponse.Code == "NoSuchKey" {
+			// Append "/" to the object name proactively and see if the Listing
+			// produces an output. If yes, then we treat it as a directory.
+			prefixName := object
+			// Trim any trailing separators and add it.
+			prefixName = strings.TrimSuffix(prefixName, string(c.targetURL.Separator)) + string(c.targetURL.Separator)
+			isRecursive := false
+			for objectStat := range c.api.ListObjects(bucket, prefixName, isRecursive, nil) {
+				if objectStat.Err != nil {
+					return nil, probe.NewError(objectStat.Err)
+				}
+				content := clientContent{}
+				content.URL = *c.targetURL
+				content.Type = os.ModeDir
+				return &content, nil
+			}
+			return nil, probe.NewError(PathNotFound{Path: c.targetURL.Path})
+		}
 		return nil, probe.NewError(e)
 	}
-	bucketMetadata := &clientContent{}
-	bucketMetadata.URL = *c.targetURL
-	bucketMetadata.Type = os.ModeDir
+	objectMetadata.URL = *c.targetURL
+	objectMetadata.Time = metadata.LastModified
+	objectMetadata.Size = metadata.Size
+	objectMetadata.Type = os.FileMode(0664)
 	c.mutex.Unlock()
-	return bucketMetadata, nil
+	return objectMetadata, nil
 }
 
 func isAmazon(host string) bool {
@@ -550,10 +599,10 @@ func (c *s3Client) listInRoutine(contentCh chan *clientContent) {
 	b, o := c.url2BucketAndObject()
 	switch {
 	case b == "" && o == "":
-		buckets, err := c.api.ListBuckets()
-		if err != nil {
+		buckets, e := c.api.ListBuckets()
+		if e != nil {
 			contentCh <- &clientContent{
-				Err: probe.NewError(err),
+				Err: probe.NewError(e),
 			}
 			return
 		}
@@ -568,16 +617,23 @@ func (c *s3Client) listInRoutine(contentCh chan *clientContent) {
 			contentCh <- content
 		}
 	case b != "" && !strings.HasSuffix(c.targetURL.Path, string(c.targetURL.Separator)) && o == "":
-		e := c.api.BucketExists(b)
+		buckets, e := c.api.ListBuckets()
 		if e != nil {
 			contentCh <- &clientContent{
 				Err: probe.NewError(e),
 			}
 		}
-		content := &clientContent{}
-		content.URL = *c.targetURL
-		content.Type = os.ModeDir
-		contentCh <- content
+		for _, bucket := range buckets {
+			if bucket.Name == b {
+				content := &clientContent{}
+				content.URL = *c.targetURL
+				content.Size = 0
+				content.Time = bucket.CreationDate
+				content.Type = os.ModeDir
+				contentCh <- content
+				break
+			}
+		}
 	default:
 		metadata, e := c.api.StatObject(b, o)
 		switch e.(type) {
@@ -696,7 +752,7 @@ func (c *s3Client) ShareDownload(expires time.Duration) (string, *probe.Error) {
 	if e != nil {
 		return "", probe.NewError(e)
 	}
-	return presignedURL, nil
+	return presignedURL.String(), nil
 }
 
 // ShareUpload - get data for presigned post http form upload.
@@ -722,6 +778,6 @@ func (c *s3Client) ShareUpload(isRecursive bool, expires time.Duration, contentT
 			return nil, probe.NewError(e)
 		}
 	}
-	m, e := c.api.PresignedPostPolicy(p)
+	_, m, e := c.api.PresignedPostPolicy(p)
 	return m, probe.NewError(e)
 }

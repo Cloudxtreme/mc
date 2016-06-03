@@ -77,7 +77,7 @@ EXAMPLES:
 }
 
 // bySessionWhen is a type for sorting session metadata by time.
-type bySessionWhen []*sessionV6
+type bySessionWhen []*sessionV7
 
 func (b bySessionWhen) Len() int           { return len(b) }
 func (b bySessionWhen) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
@@ -85,19 +85,19 @@ func (b bySessionWhen) Less(i, j int) bool { return b[i].Header.When.Before(b[j]
 
 // listSessions list all current sessions.
 func listSessions() *probe.Error {
-	var bySessions []*sessionV6
+	var bySessions []*sessionV7
 	for _, sid := range getSessionIDs() {
-		s, err := loadSessionV6(sid)
+		session, err := loadSessionV7(sid)
 		if err != nil {
-			return err.Trace(sid)
+			continue // Skip 'broken' session during listing
 		}
-		bySessions = append(bySessions, s)
+		session.Close() // Session close right here.
+		bySessions = append(bySessions, session)
 	}
 	// sort sessions based on time.
 	sort.Sort(bySessionWhen(bySessions))
 	for _, session := range bySessions {
 		printMsg(session)
-		session.Close()
 	}
 	return nil
 }
@@ -110,7 +110,15 @@ type clearSessionMessage struct {
 
 // String colorized clear session message.
 func (c clearSessionMessage) String() string {
-	return console.Colorize("ClearSession", "Session ‘"+c.SessionID+"’ cleared successfully.")
+	msg := "Session ‘" + c.SessionID + "’"
+	var colorizedMsg string
+	switch c.Status {
+	case "success":
+		colorizedMsg = console.Colorize("ClearSession", msg+" cleared succesfully.")
+	case "forced":
+		colorizedMsg = console.Colorize("ClearSession", msg+" cleared forcefully.")
+	}
+	return colorizedMsg
 }
 
 // JSON jsonified clear session message.
@@ -125,7 +133,7 @@ func (c clearSessionMessage) JSON() string {
 func clearSession(sid string) {
 	if sid == "all" {
 		for _, sid := range getSessionIDs() {
-			session, err := loadSessionV6(sid)
+			session, err := loadSessionV7(sid)
 			fatalIf(err.Trace(sid), "Unable to load session ‘"+sid+"’.")
 
 			fatalIf(session.Delete().Trace(sid), "Unable to load session ‘"+sid+"’.")
@@ -139,8 +147,15 @@ func clearSession(sid string) {
 		fatalIf(errDummy().Trace(sid), "Session ‘"+sid+"’ not found.")
 	}
 
-	session, err := loadSessionV6(sid)
-	fatalIf(err.Trace(sid), "Unable to load session ‘"+sid+"’.")
+	session, err := loadSessionV7(sid)
+	if err != nil {
+		// `mc session clear <broken-session-id>` assumes that user is aware that the session is unuseful
+		// and wants the associated session files to be removed
+		removeSessionFile(sid)
+		removeSessionDataFile(sid)
+		printMsg(clearSessionMessage{Status: "forced", SessionID: sid})
+		return
+	}
 
 	if session != nil {
 		fatalIf(session.Delete().Trace(sid), "Unable to load session ‘"+sid+"’.")
@@ -148,7 +163,7 @@ func clearSession(sid string) {
 	}
 }
 
-func sessionExecute(s *sessionV6) {
+func sessionExecute(s *sessionV7) {
 	switch s.Header.CommandType {
 	case "cp":
 		doCopySession(s)
@@ -230,7 +245,7 @@ func mainSession(ctx *cli.Context) {
 			}
 			fatalIf(errDummy().Trace(sid), errorMsg)
 		}
-		s, err := loadSessionV6(sid)
+		s, err := loadSessionV7(sid)
 		fatalIf(err.Trace(sid), "Unable to load session.")
 
 		// Restore the state of global variables from this previous session.

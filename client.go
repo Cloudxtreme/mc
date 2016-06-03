@@ -32,12 +32,15 @@ type Client interface {
 
 	// Bucket operations
 	MakeBucket(region string) *probe.Error
-	GetBucketAccess() (access string, error *probe.Error)
-	SetBucketAccess(access string) *probe.Error
+
+	// Access policy operations.
+	GetAccess() (access string, error *probe.Error)
+	SetAccess(access string) *probe.Error
 
 	// I/O operations
 	Get() (reader io.Reader, err *probe.Error)
 	Put(reader io.Reader, size int64, contentType string, progress io.Reader) (n int64, err *probe.Error)
+	Copy(source string, size int64, progress io.Reader) *probe.Error
 
 	// I/O operations with expiration
 	ShareDownload(expires time.Duration) (string, *probe.Error)

@@ -19,6 +19,7 @@ package main
 import (
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -28,7 +29,7 @@ import (
 	"io/ioutil"
 
 	"github.com/minio/mc/pkg/hookreader"
-	"github.com/minio/minio/pkg/ioutils"
+	"github.com/minio/mc/pkg/ioutils"
 	"github.com/minio/minio/pkg/probe"
 )
 
@@ -41,14 +42,42 @@ const (
 	partSuffix = ".part.minio"
 )
 
+var ( // GOOS specific ignore list.
+	ignoreFiles = map[string][]string{
+		"darwin": {".DS_Store"},
+		// "default": []string{""},
+	}
+)
+
 // fsNew - instantiate a new fs
 func fsNew(path string) (Client, *probe.Error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, probe.NewError(EmptyPath{})
 	}
 	return &fsClient{
-		PathURL: newURL(normalizePath(path)),
+		PathURL: newClientURL(normalizePath(path)),
 	}, nil
+}
+
+// isIgnoredFile returns true if 'filename' is on the exclude list.
+func isIgnoredFile(filename string) bool {
+	matchFile := path.Base(filename)
+
+	// OS specific ignore list.
+	for _, ignoredFile := range ignoreFiles[runtime.GOOS] {
+		if ignoredFile == matchFile {
+			return true
+		}
+	}
+
+	// Default ignore list for all OSes.
+	for _, ignoredFile := range ignoreFiles["default"] {
+		if ignoredFile == matchFile {
+			return true
+		}
+	}
+
+	return false
 }
 
 // URL get url.
@@ -85,7 +114,7 @@ func (f *fsClient) Put(reader io.Reader, size int64, contentType string, progres
 		}
 	}
 
-	// Write to a temporary file "object.part.mc" before committ.
+	// Write to a temporary file "object.part.mc" before commit.
 	objectPartPath := objectPath + partSuffix
 	if objectDir != "" {
 		// Create any missing top level directories.
@@ -232,6 +261,87 @@ func (f *fsClient) ShareUpload(startsWith bool, expires time.Duration, contentTy
 	})
 }
 
+// readFile reads and returns the data inside the file located
+// at the provided filepath.
+func readFile(fpath string) (io.ReadCloser, error) {
+	// Golang strips trailing / if you clean(..) or
+	// EvalSymlinks(..). Adding '.' prevents it from doing so.
+	if strings.HasSuffix(fpath, "/") {
+		fpath = fpath + "."
+	}
+	fpath, e := filepath.EvalSymlinks(fpath)
+	if e != nil {
+		return nil, e
+	}
+	fileData, e := os.Open(fpath)
+	if e != nil {
+		return nil, e
+	}
+	return fileData, nil
+}
+
+// createFile creates an empty file at the provided filepath
+// if one does not exist already.
+func createFile(fpath string) (io.WriteCloser, error) {
+	st, e := os.Stat(fpath)
+	// If destination exists but is not regular.
+	if e == nil && !st.Mode().IsRegular() {
+		return nil, PathIsNotRegular{Path: fpath}
+	}
+	// If file exists already.
+	if e != nil && !os.IsNotExist(e) {
+		return nil, e
+	}
+	if e = os.MkdirAll(filepath.Dir(fpath), 0775); e != nil {
+		return nil, e
+	}
+	file, e := os.Create(fpath)
+	if e != nil {
+		return nil, e
+	}
+	return file, nil
+}
+
+// Copy - copy data from source to destination
+func (f *fsClient) Copy(source string, size int64, progress io.Reader) *probe.Error {
+	// Don't use f.Get() f.Put() directly. Instead use readFile and createFile
+	destination := f.PathURL.Path
+	if destination == source { // Cannot copy file into itself
+		return errOverWriteNotAllowed(destination).Trace(destination)
+	}
+	rc, e := readFile(source)
+	if e != nil {
+		err := f.toClientError(e, destination)
+		return err.Trace(destination)
+	}
+	defer rc.Close()
+	wc, e := createFile(destination)
+	if e != nil {
+		err := f.toClientError(e, destination)
+		return err.Trace(destination)
+	}
+	defer wc.Close()
+	reader := hookreader.NewHook(rc, progress)
+	// Perform copy
+	n, e := io.CopyN(wc, reader, size) // e == nil only if n != size
+	// Only check size related errors if size is positive
+	if size > 0 {
+		if n < size { // Unexpected early EOF
+			return probe.NewError(UnexpectedEOF{
+				TotalSize:    size,
+				TotalWritten: n,
+			})
+		}
+		if n > size { // Unexpected ExcessRead
+			return probe.NewError(UnexpectedExcessRead{
+				TotalSize:    size,
+				TotalWritten: n,
+			})
+		}
+	}
+	return nil
+}
+
 // GetPartial download a part object from bucket.
 // sets err for any errors, reader is nil for errors.
 func (f *fsClient) Get() (io.Reader, *probe.Error) {
@@ -269,10 +379,9 @@ func (f *fsClient) Remove(incomplete bool) *probe.Error {
 // List - list files and folders.
 func (f *fsClient) List(recursive, incomplete bool) <-chan *clientContent {
 	contentCh := make(chan *clientContent)
-	switch recursive {
-	case true:
+	if recursive {
 		go f.listRecursiveInRoutine(contentCh, incomplete)
-	default:
+	} else {
 		go f.listInRoutine(contentCh, incomplete)
 	}
 	return contentCh
@@ -328,6 +437,11 @@ func (f *fsClient) listPrefixes(prefix string, contentCh chan<- *clientContent, 
 	}
 	pathURL := *f.PathURL
 	for _, fi := range files {
+		// Skip ignored files.
+		if isIgnoredFile(fi.Name()) {
+			continue
+		}
+
 		file := filepath.Join(dirName, fi.Name())
 		if fi.Mode()&os.ModeSymlink == os.ModeSymlink {
 			st, e := os.Stat(file)
@@ -401,7 +515,7 @@ func (f *fsClient) listPrefixes(prefix string, contentCh chan<- *clientContent, 
 					}
 				}
 				contentCh <- &clientContent{
-					URL:  *newURL(file),
+					URL:  *newClientURL(file),
 					Time: st.ModTime(),
 					Size: st.Size(),
 					Type: st.Mode(),
@@ -421,7 +535,7 @@ func (f *fsClient) listPrefixes(prefix string, contentCh chan<- *clientContent, 
 				}
 			}
 			contentCh <- &clientContent{
-				URL:  *newURL(file),
+				URL:  *newClientURL(file),
 				Time: fi.ModTime(),
 				Size: fi.Size(),
 				Type: fi.Mode(),
@@ -537,6 +651,12 @@ func (f *fsClient) listInRoutine(contentCh chan<- *clientContent, incomplete boo
 				}
 				pathURL = *f.PathURL
 				pathURL.Path = filepath.Join(pathURL.Path, fi.Name())
+
+				// Skip ignored files.
+				if isIgnoredFile(fi.Name()) {
+					continue
+				}
+
 				contentCh <- &clientContent{
 					URL:  pathURL,
 					Time: fi.ModTime(),
@@ -581,6 +701,11 @@ func (f *fsClient) listRecursiveInRoutine(contentCh chan *clientContent, incompl
 		}
 		// We would never need to print system root path '/'.
 		if fp == "/" {
+			return nil
+		}
+
+		// Ignore files from ignore list.
+		if isIgnoredFile(fi.Name()) {
 			return nil
 		}
 
@@ -704,7 +829,7 @@ func (f *fsClient) listRecursiveInRoutine(contentCh chan *clientContent, incompl
 				return e
 			}
 		}
-		if fi.Mode().IsRegular() || fi.Mode().IsDir() {
+		if fi.Mode().IsRegular() {
 			if incomplete {
 				if !strings.HasSuffix(fi.Name(), partSuffix) {
 					return nil
@@ -715,7 +840,7 @@ func (f *fsClient) listRecursiveInRoutine(contentCh chan *clientContent, incompl
 				}
 			}
 			contentCh <- &clientContent{
-				URL:  *newURL(fp),
+				URL:  *newClientURL(fp),
 				Time: fi.ModTime(),
 				Size: fi.Size(),
 				Type: fi.Mode(),
@@ -758,14 +883,59 @@ func (f *fsClient) MakeBucket(region string) *probe.Error {
 	return nil
 }
 
-// GetBucketACL - get bucket access.
-func (f *fsClient) GetBucketAccess() (acl string, err *probe.Error) {
-	return "", probe.NewError(APINotImplemented{API: "GetBucketAccess", APIType: "filesystem"})
+// GetAccess - get access policy permissions.
+func (f *fsClient) GetAccess() (access string, err *probe.Error) {
+	// For windows this feature is not implemented.
+	if runtime.GOOS == "windows" {
+		return "", probe.NewError(APINotImplemented{API: "GetAccess", APIType: "filesystem"})
+	}
+	st, err := f.fsStat()
+	if err != nil {
+		return "", err.Trace(f.PathURL.String())
+	}
+	if !st.Mode().IsDir() {
+		return "", probe.NewError(APINotImplemented{API: "GetAccess", APIType: "filesystem"})
+	}
+	switch {
+	case st.Mode() == os.FileMode(0777):
+		return "readwrite", nil
+	case st.Mode() == os.FileMode(0555):
+		return "readonly", nil
+	case st.Mode() == os.FileMode(0333):
+		return "writeonly", nil
+	}
+	return "none", nil
 }
 
-// SetBucketAccess - set bucket access.
-func (f *fsClient) SetBucketAccess(acl string) *probe.Error {
-	return probe.NewError(APINotImplemented{API: "SetBucketAccess", APIType: "filesystem"})
+// SetAccess - set access policy permissions.
+func (f *fsClient) SetAccess(access string) *probe.Error {
+	// For windows this feature is not implemented.
+	if runtime.GOOS == "windows" {
+		return probe.NewError(APINotImplemented{API: "SetAccess", APIType: "filesystem"})
+	}
+	st, err := f.fsStat()
+	if err != nil {
+		return err.Trace(f.PathURL.String())
+	}
+	if !st.Mode().IsDir() {
+		return probe.NewError(APINotImplemented{API: "SetAccess", APIType: "filesystem"})
+	}
+	var mode os.FileMode
+	switch access {
+	case "readonly":
+		mode = os.FileMode(0555)
+	case "writeonly":
+		mode = os.FileMode(0333)
+	case "readwrite":
+		mode = os.FileMode(0777)
+	case "none":
+		mode = os.FileMode(0755)
+	}
+	e := os.Chmod(f.PathURL.Path, mode)
+	if e != nil {
+		return probe.NewError(e)
+	}
+	return nil
 }
 
 // Stat - get metadata from path.

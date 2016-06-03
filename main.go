@@ -17,15 +17,19 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 
 	"github.com/minio/cli"
+	"github.com/minio/mc/pkg/console"
 	"github.com/minio/minio/pkg/probe"
 	"github.com/minio/pb"
+	"github.com/pkg/profile"
 )
 
 var (
@@ -81,8 +85,23 @@ func checkConfig() {
 	// Refresh the config once.
 	loadMcConfig = loadMcConfigFactory()
 	// Ensures config file is sane.
-	_, err := loadMcConfig()
+	config, err := loadMcConfig()
+	// Verify if the path is accesible before validating the config
 	fatalIf(err.Trace(mustGetMcConfigPath()), "Unable to access configuration file.")
+
+	// Validate and print error messges
+	ok, errMsgs := validateConfigFile(config)
+	if !ok {
+		var errorMsg bytes.Buffer
+		for index, errMsg := range errMsgs {
+			// Print atmost 10 errors
+			if index > 10 {
+				break
+			}
+			errorMsg.WriteString(errMsg + "\n")
+		}
+		console.Fatalln(errorMsg.String())
+	}
 }
 
 func migrate() {
@@ -121,19 +140,44 @@ func getSystemData() map[string]string {
 	}
 }
 
-func registerBefore(ctx *cli.Context) error {
-	setMcConfigDir(ctx.GlobalString("config-folder"))
+// initMC - initialize 'mc'.
+func initMC() {
+	// Check if mc config exists.
+	if !isMcConfigExists() {
+		err := saveMcConfig(newMcConfig())
+		fatalIf(err.Trace(), "Unable to save new mc config.")
 
-	// Verify golang runtime.
-	verifyMCRuntime()
+		console.Infoln("Configuration written to ‘" + mustGetMcConfigPath() + "’. Please update your access credentials.")
+	}
+
+	// Check if mc session folder exists.
+	if !isSessionDirExists() {
+		fatalIf(createSessionDir().Trace(), "Unable to create session config folder.")
+	}
+
+	// Check if mc share folder exists.
+	if !isShareDirExists() {
+		initShareConfig()
+	}
+}
+
+func registerBefore(ctx *cli.Context) error {
+	// Check if mc was compiled using a supported version of Golang.
+	checkGoVersion()
+
+	// Set the config folder.
+	setMcConfigDir(ctx.GlobalString("config-folder"))
 
 	// Migrate any old version of config / state files to newer format.
 	migrate()
 
+	// Initialize default config files.
+	initMC()
+
 	// Set global flags.
 	setGlobalsFromContext(ctx)
 
-	// Checkconfig if it can be read.
+	// Check if config can be read.
 	checkConfig()
 
 	return nil
@@ -186,7 +230,23 @@ func registerApp() *cli.App {
 	return app
 }
 
+// mustGetProfilePath must get location that the profile will be written to.
+func mustGetProfileDir() string {
+	return filepath.Join(mustGetMcConfigDir(), globalProfileDir)
+}
+
 func main() {
+	// Enable profiling supported modes are [cpu, mem, block].
+	// ``MC_PROFILER`` supported options are [cpu, mem, block].
+	switch os.Getenv("MC_PROFILER") {
+	case "cpu":
+		defer profile.Start(profile.CPUProfile, profile.ProfilePath(mustGetProfileDir())).Stop()
+	case "mem":
+		defer profile.Start(profile.MemProfile, profile.ProfilePath(mustGetProfileDir())).Stop()
+	case "block":
+		defer profile.Start(profile.BlockProfile, profile.ProfilePath(mustGetProfileDir())).Stop()
+	}
+
 	probe.Init() // Set project's root source path.
 	probe.SetAppInfo("Release-Tag", mcReleaseTag)
 	probe.SetAppInfo("Commit", mcShortCommitID)

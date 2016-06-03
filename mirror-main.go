@@ -1,5 +1,5 @@
 /*
- * Minio Client, (C) 2015 Minio, Inc.
+ * Minio Client, (C) 2015, 2016 Minio, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,6 +44,14 @@ var (
 			Name:  "force",
 			Usage: "Force overwrite of an existing target(s).",
 		},
+		cli.BoolFlag{
+			Name:  "fake",
+			Usage: "Perform a fake mirror operation.",
+		},
+		cli.BoolFlag{
+			Name:  "remove",
+			Usage: "Remove extraneous file(s) on target.",
+		},
 	}
 )
 
@@ -71,6 +79,16 @@ EXAMPLES:
 
    3. Mirror a bucket from aliased Amazon S3 cloud storage to a folder on Windows.
       $ mc {{.Name}} s3\documents\2014\ C:\backup\2014
+
+   4. Mirror a bucket from aliased Amazon S3 cloud storage to a local folder use '--force' to overwrite destination.
+      $ mc {{.Name}} --force s3/miniocloud miniocloud-backup
+
+   5. Fake mirror a bucket from Minio cloud storage to a bucket on Amazon S3 cloud storage.
+      $ mc {{.Name}} --fake play/photos/2014 s3/backup-photos/2014
+
+   6. Mirror a bucket from Minio cloud storage to a bucket on Amazon S3 cloud storage and remove any extraneous
+      files on Amazon S3 cloud storage. NOTE: '--remove' is only supported with '--force'.
+      $ mc {{.Name}} --force --remove play/photos/2014 s3/backup-photos/2014
 `,
 }
 
@@ -115,8 +133,27 @@ func (c mirrorStatMessage) String() string {
 	return message
 }
 
+// doRemove - removes files on target.
+func doRemove(sURLs mirrorURLs, fakeRemove bool) mirrorURLs {
+	targetAlias := sURLs.TargetAlias
+	targetURL := sURLs.TargetContent.URL
+
+	// We are not removing incomplete uploads.
+	isIncomplete := false
+
+	// Remove extraneous file on target.
+	err := rm(targetAlias, targetURL.String(), isIncomplete, fakeRemove)
+	if err != nil {
+		sURLs.Error = err.Trace(targetAlias, targetURL.String())
+		return sURLs
+	}
+
+	sURLs.Error = nil // just for safety
+	return sURLs
+}
+
 // doMirror - Mirror an object to multiple destination. mirrorURLs status contains a copy of sURLs and error if any.
-func doMirror(sURLs mirrorURLs, progressReader *progressBar, accountingReader *accounter) mirrorURLs {
+func doMirror(sURLs mirrorURLs, progressReader *progressBar, accountingReader *accounter, fakeMirror bool) mirrorURLs {
 	if sURLs.Error != nil { // Errorneous sURLs passed.
 		sURLs.Error = sURLs.Error.Trace()
 		return sURLs
@@ -130,12 +167,6 @@ func doMirror(sURLs mirrorURLs, progressReader *progressBar, accountingReader *a
 
 	if !globalQuiet && !globalJSON {
 		progressReader = progressReader.SetCaption(sourceURL.String() + ": ")
-	}
-
-	reader, err := getSourceStreamFromAlias(sourceAlias, sourceURL.String())
-	if err != nil {
-		sURLs.Error = err.Trace(sourceURL.String())
-		return sURLs
 	}
 
 	var progress io.Reader
@@ -153,26 +184,69 @@ func doMirror(sURLs mirrorURLs, progressReader *progressBar, accountingReader *a
 		// Set up progress bar.
 		progress = progressReader.ProgressBar
 	}
-	_, err = putTargetStreamFromAlias(targetAlias, targetURL.String(), reader, length, progress)
-	if err != nil {
-		sURLs.Error = err.Trace(targetURL.String())
+
+	// For a fake mirror make sure we update respective progress bars
+	// and accounting readers under relevant conditions.
+	if fakeMirror {
+		if !globalJSON && !globalQuiet {
+			progressReader.ProgressBar.Add64(sURLs.SourceContent.Size)
+		} else {
+			accountingReader.Add(sURLs.SourceContent.Size)
+		}
+		sURLs.Error = nil
 		return sURLs
 	}
-
+	// If source size is <= 5GB and operation is across same server type try to use Copy.
+	if length <= fiveGB && sourceURL.Type == targetURL.Type {
+		// FS -> FS Copy includes alias in path.
+		if sourceURL.Type == fileSystem {
+			sourcePath := filepath.ToSlash(filepath.Join(sourceAlias, sourceURL.Path))
+			err := copySourceStreamFromAlias(targetAlias, targetURL.String(), sourcePath, length, progress)
+			if err != nil {
+				sURLs.Error = err.Trace(sourceURL.String())
+				return sURLs
+			}
+		} else if sourceURL.Type == objectStorage {
+			if sourceAlias == targetAlias {
+				// If source/target are object storage their aliases must be the same
+				// Do not include alias inside path for ObjStore -> ObjStore.
+				err := copySourceStreamFromAlias(targetAlias, targetURL.String(), sourceURL.Path, length, progress)
+				if err != nil {
+					sURLs.Error = err.Trace(sourceURL.String())
+					return sURLs
+				}
+			} else {
+				reader, err := getSourceStreamFromAlias(sourceAlias, sourceURL.String())
+				if err != nil {
+					sURLs.Error = err.Trace(sourceURL.String())
+					return sURLs
+				}
+				_, err = putTargetStreamFromAlias(targetAlias, targetURL.String(), reader, length, progress)
+				if err != nil {
+					sURLs.Error = err.Trace(targetURL.String())
+					return sURLs
+				}
+			}
+		}
+	} else {
+		// Standard GET/PUT for size > 5GB
+		reader, err := getSourceStreamFromAlias(sourceAlias, sourceURL.String())
+		if err != nil {
+			sURLs.Error = err.Trace(sourceURL.String())
+			return sURLs
+		}
+		_, err = putTargetStreamFromAlias(targetAlias, targetURL.String(), reader, length, progress)
+		if err != nil {
+			sURLs.Error = err.Trace(targetURL.String())
+			return sURLs
+		}
+	}
 	sURLs.Error = nil // just for safety
 	return sURLs
 }
 
-// doMirrorFake - Perform a fake mirror to update the progress bar appropriately.
-func doMirrorFake(sURLs mirrorURLs, progressReader *progressBar) mirrorURLs {
-	if !globalDebug && !globalJSON {
-		progressReader.ProgressBar.Add64(sURLs.SourceContent.Size)
-	}
-	return sURLs
-}
-
 // doPrepareMirrorURLs scans the source URL and prepares a list of objects for mirroring.
-func doPrepareMirrorURLs(session *sessionV6, isForce bool, trapCh <-chan bool) {
+func doPrepareMirrorURLs(session *sessionV7, isForce bool, isFake bool, isRemove bool, trapCh <-chan bool) {
 	sourceURL := session.Header.CommandArgs[0] // first one is source.
 	targetURL := session.Header.CommandArgs[1]
 	var totalBytes int64
@@ -186,9 +260,9 @@ func doPrepareMirrorURLs(session *sessionV6, isForce bool, trapCh <-chan bool) {
 		scanBar = scanBarFactory()
 	}
 
-	URLsCh := prepareMirrorURLs(sourceURL, targetURL, isForce)
+	URLsCh := prepareMirrorURLs(sourceURL, targetURL, isForce, isFake, isRemove)
 	done := false
-	for done == false {
+	for !done {
 		select {
 		case sURLs, ok := <-URLsCh:
 			if !ok { // Done with URL prepration
@@ -213,10 +287,18 @@ func doPrepareMirrorURLs(session *sessionV6, isForce bool, trapCh <-chan bool) {
 			}
 			fmt.Fprintln(dataFP, string(jsonData))
 			if !globalQuiet && !globalJSON {
-				scanBar(sURLs.SourceContent.URL.String())
+				// Source content is empty if removal is requested,
+				// put targetContent on to scan bar.
+				if sURLs.SourceContent != nil {
+					scanBar(sURLs.SourceContent.URL.String())
+				} else if sURLs.TargetContent != nil && isRemove {
+					scanBar(sURLs.TargetContent.URL.String())
+				}
 			}
-
-			totalBytes += sURLs.SourceContent.Size
+			// Remember totalBytes only for mirror not for removal,
+			if sURLs.SourceContent != nil {
+				totalBytes += sURLs.SourceContent.Size
+			}
 			totalObjects++
 		case <-trapCh:
 			// Print in new line and adjust to top so that we don't print over the ongoing scan bar
@@ -233,12 +315,16 @@ func doPrepareMirrorURLs(session *sessionV6, isForce bool, trapCh <-chan bool) {
 }
 
 // Session'fied mirror command.
-func doMirrorSession(session *sessionV6) {
+func doMirrorSession(session *sessionV7) {
 	isForce := session.Header.CommandBoolFlags["force"]
+	isFake := session.Header.CommandBoolFlags["fake"]
+	isRemove := session.Header.CommandBoolFlags["remove"]
+
+	// Initialize signal trap.
 	trapCh := signalTrap(os.Interrupt, syscall.SIGTERM)
 
 	if !session.HasData() {
-		doPrepareMirrorURLs(session, isForce, trapCh)
+		doPrepareMirrorURLs(session, isForce, isFake, isRemove, trapCh)
 	}
 
 	// Enable accounting reader by default.
@@ -255,7 +341,11 @@ func doMirrorSession(session *sessionV6) {
 
 	// isCopied returns true if an object has been already copied
 	// or not. This is useful when we resume from a session.
-	isCopied := isCopiedFactory(session.Header.LastCopied)
+	isCopied := isLastFactory(session.Header.LastCopied)
+
+	// isRemoved returns true if an object has been already removed or
+	// not. This is useful when we resume from a session.
+	isRemoved := isLastFactory(session.Header.LastRemoved)
 
 	// Wait on status of doMirror() operation.
 	var statusCh = make(chan mirrorURLs)
@@ -281,53 +371,72 @@ func doMirrorSession(session *sessionV6) {
 					return
 				}
 				if sURLs.Error == nil {
-					session.Header.LastCopied = sURLs.SourceContent.URL.String()
-					session.Save()
+					if sURLs.SourceContent != nil {
+						session.Header.LastCopied = sURLs.SourceContent.URL.String()
+						session.Save()
+					} else if sURLs.TargetContent != nil && isRemove {
+						session.Header.LastRemoved = sURLs.TargetContent.URL.String()
+						session.Save()
+
+						// Construct user facing message and path.
+						targetPath := filepath.ToSlash(filepath.Join(sURLs.TargetAlias, sURLs.TargetContent.URL.Path))
+						if !globalQuiet && !globalJSON {
+							console.Eraseline()
+						}
+						printMsg(rmMessage{
+							Status: "success",
+							URL:    targetPath,
+						})
+					}
 				} else {
 					// Print in new line and adjust to top so that we
 					// don't print over the ongoing progress bar.
 					if !globalQuiet && !globalJSON {
 						console.Eraseline()
 					}
-					errorIf(sURLs.Error.Trace(sURLs.SourceContent.URL.String()),
-						fmt.Sprintf("Failed to copy ‘%s’.", sURLs.SourceContent.URL.String()))
+					if sURLs.SourceContent != nil {
+						errorIf(sURLs.Error.Trace(sURLs.SourceContent.URL.String()),
+							fmt.Sprintf("Failed to copy ‘%s’.", sURLs.SourceContent.URL.String()))
+					} else {
+						// When sURLs.SourceContent is nil, we know that we have an error related to removing
+						errorIf(sURLs.Error.Trace(sURLs.TargetContent.URL.String()),
+							fmt.Sprintf("Failed to remove ‘%s’.", sURLs.TargetContent.URL.String()))
+					}
 					// For all non critical errors we can continue for the
 					// remaining files.
 					switch sURLs.Error.ToGoError().(type) {
-					// Handle this specifically for filesystem related
-					// errors.
-					case BrokenSymlink:
+					// Handle this specifically for filesystem related errors.
+					case BrokenSymlink, TooManyLevelsSymlink, PathNotFound, PathInsufficientPermission:
 						continue
-					case TooManyLevelsSymlink:
-						continue
-					case PathNotFound:
-						continue
-					case PathInsufficientPermission:
-						continue
-					case ObjectAlreadyExists:
-						continue
-					case BucketDoesNotExist:
+					case BucketNameEmpty, ObjectMissing, ObjectAlreadyExists, BucketDoesNotExist, BucketInvalid:
 						continue
 					}
 					// For critical errors we should exit. Session
 					// can be resumed after the user figures out
-					// the  problem.
+					// the problem.
 					session.CloseAndDie()
 				}
 			}
 		}
 	}()
 
-	// Loop through all urls.
+	// Loop through all urls and mirror.
 	for urlScanner.Scan() {
 		var sURLs mirrorURLs
+
 		// Unmarshal copyURLs from each line.
 		json.Unmarshal([]byte(urlScanner.Text()), &sURLs)
-		// Verify if previously copied, notify progress bar.
-		if isCopied(sURLs.SourceContent.URL.String()) {
-			statusCh <- doMirrorFake(sURLs, progressReader)
-		} else {
-			statusCh <- doMirror(sURLs, progressReader, accntReader)
+
+		if sURLs.SourceContent != nil {
+			// Verify if previously copied or if its a fake mirror, set
+			// fake mirror accordingly.
+			fakeMirror := isCopied(sURLs.SourceContent.URL.String()) || isFake
+			// Perform mirror operation.
+			statusCh <- doMirror(sURLs, progressReader, accntReader, fakeMirror)
+		} else if sURLs.TargetContent != nil && isRemove {
+			fakeRemove := isRemoved(sURLs.TargetContent.URL.String()) || isFake
+			// Perform remove operation.
+			statusCh <- doRemove(sURLs, fakeRemove)
 		}
 	}
 
@@ -338,7 +447,7 @@ func doMirrorSession(session *sessionV6) {
 	wg.Wait()
 
 	if !globalQuiet && !globalJSON {
-		if progressReader.ProgressBar.Total > 0 {
+		if progressReader.ProgressBar.Get() > 0 {
 			progressReader.ProgressBar.Finish()
 		}
 	} else {
@@ -364,7 +473,7 @@ func mainMirror(ctx *cli.Context) {
 	console.SetColor("Mirror", color.New(color.FgGreen, color.Bold))
 
 	var e error
-	session := newSessionV6()
+	session := newSessionV7()
 	session.Header.CommandType = "mirror"
 	session.Header.RootPath, e = os.Getwd()
 	if e != nil {
@@ -374,7 +483,11 @@ func mainMirror(ctx *cli.Context) {
 
 	// Set command flags from context.
 	isForce := ctx.Bool("force")
+	isFake := ctx.Bool("fake")
+	isRemove := ctx.Bool("remove")
 	session.Header.CommandBoolFlags["force"] = isForce
+	session.Header.CommandBoolFlags["fake"] = isFake
+	session.Header.CommandBoolFlags["remove"] = isRemove
 
 	// extract URLs.
 	session.Header.CommandArgs = ctx.Args()

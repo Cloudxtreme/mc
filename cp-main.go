@@ -112,6 +112,11 @@ type copyStatMessage struct {
 	Speed       float64
 }
 
+const (
+	// 5GiB.
+	fiveGB = 5 * 1024 * 1024 * 1024
+)
+
 // copyStatMessage copy accounting message
 func (c copyStatMessage) String() string {
 	speedBox := pb.Format(int64(c.Speed)).To(pb.U_BYTES).String()
@@ -142,12 +147,6 @@ func doCopy(cpURLs copyURLs, progressReader *progressBar, accountingReader *acco
 	targetURL := cpURLs.TargetContent.URL
 	length := cpURLs.SourceContent.Size
 
-	reader, err := getSourceStreamFromAlias(sourceAlias, sourceURL.String())
-	if err != nil {
-		cpURLs.Error = err.Trace(sourceURL.String())
-		return cpURLs
-	}
-
 	var progress io.Reader
 	if globalQuiet || globalJSON {
 		sourcePath := filepath.ToSlash(filepath.Join(sourceAlias, sourceURL.Path))
@@ -164,10 +163,50 @@ func doCopy(cpURLs copyURLs, progressReader *progressBar, accountingReader *acco
 		// Set up progress reader.
 		progress = progressReader.ProgressBar
 	}
-	_, err = putTargetStreamFromAlias(targetAlias, targetURL.String(), reader, length, progress)
-	if err != nil {
-		cpURLs.Error = err.Trace(targetURL.String())
-		return cpURLs
+	// If source size is <= 5GB and operation is across same server type try to use Copy.
+	if length <= fiveGB && (sourceURL.Type == targetURL.Type) {
+		// FS -> FS Copy includes alias in path.
+		if sourceURL.Type == fileSystem {
+			sourcePath := filepath.ToSlash(filepath.Join(sourceAlias, sourceURL.Path))
+			err := copySourceStreamFromAlias(targetAlias, targetURL.String(), sourcePath, length, progress)
+			if err != nil {
+				cpURLs.Error = err.Trace(sourceURL.String())
+				return cpURLs
+			}
+		} else if sourceURL.Type == objectStorage {
+			// If source/target are object storage their aliases must be the same.
+			if sourceAlias == targetAlias {
+				// Do not include alias inside path for ObjStore -> ObjStore.
+				err := copySourceStreamFromAlias(targetAlias, targetURL.String(), sourceURL.Path, length, progress)
+				if err != nil {
+					cpURLs.Error = err.Trace(sourceURL.String())
+					return cpURLs
+				}
+			} else {
+				reader, err := getSourceStreamFromAlias(sourceAlias, sourceURL.String())
+				if err != nil {
+					cpURLs.Error = err.Trace(sourceURL.String())
+					return cpURLs
+				}
+				_, err = putTargetStreamFromAlias(targetAlias, targetURL.String(), reader, length, progress)
+				if err != nil {
+					cpURLs.Error = err.Trace(targetURL.String())
+					return cpURLs
+				}
+			}
+		}
+	} else {
+		// Standard GET/PUT for size > 5GB.
+		reader, err := getSourceStreamFromAlias(sourceAlias, sourceURL.String())
+		if err != nil {
+			cpURLs.Error = err.Trace(sourceURL.String())
+			return cpURLs
+		}
+		_, err = putTargetStreamFromAlias(targetAlias, targetURL.String(), reader, length, progress)
+		if err != nil {
+			cpURLs.Error = err.Trace(targetURL.String())
+			return cpURLs
+		}
 	}
 	cpURLs.Error = nil // just for safety
 	return cpURLs
@@ -182,7 +221,7 @@ func doCopyFake(cpURLs copyURLs, progressReader *progressBar) copyURLs {
 }
 
 // doPrepareCopyURLs scans the source URL and prepares a list of objects for copying.
-func doPrepareCopyURLs(session *sessionV6, trapCh <-chan bool) {
+func doPrepareCopyURLs(session *sessionV7, trapCh <-chan bool) {
 	// Separate source and target. 'cp' can take only one target,
 	// but any number of sources.
 	sourceURLs := session.Header.CommandArgs[:len(session.Header.CommandArgs)-1]
@@ -204,8 +243,7 @@ func doPrepareCopyURLs(session *sessionV6, trapCh <-chan bool) {
 
 	URLsCh := prepareCopyURLs(sourceURLs, targetURL, isRecursive)
 	done := false
-
-	for done == false {
+	for !done {
 		select {
 		case cpURLs, ok := <-URLsCh:
 			if !ok { // Done with URL preparation
@@ -251,7 +289,7 @@ func doPrepareCopyURLs(session *sessionV6, trapCh <-chan bool) {
 	session.Save()
 }
 
-func doCopySession(session *sessionV6) {
+func doCopySession(session *sessionV7) {
 	trapCh := signalTrap(os.Interrupt, syscall.SIGTERM)
 
 	if !session.HasData() {
@@ -265,7 +303,7 @@ func doCopySession(session *sessionV6) {
 	urlScanner := bufio.NewScanner(session.NewDataReader())
 	// isCopied returns true if an object has been already copied
 	// or not. This is useful when we resume from a session.
-	isCopied := isCopiedFactory(session.Header.LastCopied)
+	isCopied := isLastFactory(session.Header.LastCopied)
 
 	// Enable progress bar reader only during default mode.
 	var progressReader *progressBar
@@ -310,19 +348,10 @@ func doCopySession(session *sessionV6) {
 					// For all non critical errors we can continue for the
 					// remaining files.
 					switch cpURLs.Error.ToGoError().(type) {
-					// Handle this specifically for filesystem related
-					// errors.
-					case BrokenSymlink:
+					// Handle this specifically for filesystem related errors.
+					case BrokenSymlink, TooManyLevelsSymlink, PathNotFound, PathInsufficientPermission:
 						continue
-					case TooManyLevelsSymlink:
-						continue
-					case PathNotFound:
-						continue
-					case PathInsufficientPermission:
-						continue
-					case ObjectAlreadyExists:
-						continue
-					case BucketDoesNotExist:
+					case BucketNameEmpty, ObjectMissing, ObjectAlreadyExists, BucketDoesNotExist, BucketInvalid:
 						continue
 					}
 					// For critical errors we should exit. Session
@@ -355,7 +384,7 @@ func doCopySession(session *sessionV6) {
 	wg.Wait()
 
 	if !globalQuiet && !globalJSON {
-		if progressReader.ProgressBar.Total > 0 {
+		if progressReader.ProgressBar.Get() > 0 {
 			progressReader.ProgressBar.Finish()
 		}
 	} else {
@@ -380,7 +409,7 @@ func mainCopy(ctx *cli.Context) {
 	// Additional command speific theme customization.
 	console.SetColor("Copy", color.New(color.FgGreen, color.Bold))
 
-	session := newSessionV6()
+	session := newSessionV7()
 	session.Header.CommandType = "cp"
 	session.Header.CommandBoolFlags["recursive"] = ctx.Bool("recursive")
 

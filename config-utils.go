@@ -21,13 +21,15 @@ import (
 	"strings"
 )
 
+var validAPIs = []string{"S3v4", "S3v2"}
+
 // isValidSecretKey - validate secret key.
 func isValidSecretKey(secretKey string) bool {
 	if secretKey == "" {
 		return true
 	}
-	regex := regexp.MustCompile("^.{40}$")
-	return regex.MatchString(secretKey)
+	regex := regexp.MustCompile(`.{8,40}$`)
+	return regex.MatchString(secretKey) && !strings.ContainsAny(secretKey, "$%^~`!|&*#@")
 }
 
 // isValidAccessKey - validate access key.
@@ -35,8 +37,8 @@ func isValidAccessKey(accessKey string) bool {
 	if accessKey == "" {
 		return true
 	}
-	regex := regexp.MustCompile("^[A-Z0-9\\-\\.\\_\\~]{20}$")
-	return regex.MatchString(accessKey)
+	regex := regexp.MustCompile(`.{5,40}$`)
+	return regex.MatchString(accessKey) && !strings.ContainsAny(accessKey, "$%^~`!|&*#@")
 }
 
 // isValidHostURL - validate input host url.
@@ -44,7 +46,7 @@ func isValidHostURL(hostURL string) bool {
 	if strings.TrimSpace(hostURL) == "" {
 		return false
 	}
-	url := newURL(hostURL)
+	url := newClientURL(hostURL)
 	if url.Scheme != "https" && url.Scheme != "http" {
 		return false
 	}
@@ -52,4 +54,14 @@ func isValidHostURL(hostURL string) bool {
 		return false
 	}
 	return true
+}
+
+// isValidAPI - Validates if API signature string of supported type.
+func isValidAPI(api string) bool {
+	switch strings.ToLower(api) {
+	case "s3v2", "s3v4":
+		return true
+	default:
+		return false
+	}
 }

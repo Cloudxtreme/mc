@@ -49,18 +49,20 @@ func (e BucketExists) Error() string {
 	return "Bucket ‘" + e.Bucket + "’ exists."
 }
 
-// InvalidBucketName - bucket name invalid (http://goo.gl/wJlzDz)
-type InvalidBucketName GenericBucketError
-
-func (e InvalidBucketName) Error() string {
-	return "Invalid bucketname [‘" + e.Bucket + "’], please read http://goo.gl/wJlzDz."
-}
-
 // BucketNameEmpty - bucket name empty (http://goo.gl/wJlzDz)
 type BucketNameEmpty struct{}
 
 func (e BucketNameEmpty) Error() string {
 	return "Bucket name cannot be empty."
+}
+
+// BucketInvalid - bucket name invalid.
+type BucketInvalid struct {
+	Bucket string
+}
+
+func (e BucketInvalid) Error() string {
+	return "Bucket name " + e.Bucket + " not valid."
 }
 
 // ObjectAlreadyExists - typed return for MethodNotAllowed

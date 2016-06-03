@@ -32,33 +32,8 @@ import (
 	"github.com/minio/minio/pkg/quick"
 )
 
-func migrateSessionV5ToV6() {
-	for _, sid := range getSessionIDs() {
-		sessionV6, err := loadSessionV6(sid)
-		fatalIf(err.Trace(sid), "Unable to load version ‘6’. Migration failed please report this issue at https://github.com/minio/mc/issues.")
-		if sessionV6.Header.Version == "6" { // It is new format.
-			return
-		}
-		/*** Remove all session files older than v6 ***/
-
-		sessionFile, err := getSessionFile(sid)
-		fatalIf(err.Trace(sid), "Unable to get session file.")
-
-		sessionDataFile, err := getSessionDataFile(sid)
-		fatalIf(err.Trace(sid), "Unable to get session data file.")
-
-		console.Println("Removing unsupported session file ‘" + sessionFile + "’ version ‘" + sessionV6.Header.Version + "’.")
-		if e := os.Remove(sessionFile); e != nil {
-			fatalIf(probe.NewError(e), "Unable to remove version ‘"+sessionV6.Header.Version+"’ session file ‘"+sessionFile+"’.")
-		}
-		if e := os.Remove(sessionDataFile); e != nil {
-			fatalIf(probe.NewError(e), "Unable to remove version ‘"+sessionV6.Header.Version+"’ session data file ‘"+sessionDataFile+"’.")
-		}
-	}
-}
-
-// sessionV6Header for resumable sessions.
-type sessionV6Header struct {
+// sessionV7Header for resumable sessions.
+type sessionV7Header struct {
 	Version            string            `json:"version"`
 	When               time.Time         `json:"time"`
 	RootPath           string            `json:"workingFolder"`
@@ -71,6 +46,7 @@ type sessionV6Header struct {
 	CommandIntFlags    map[string]int    `json:"cmdIntFlags"`
 	CommandStringFlags map[string]string `json:"cmdStringFlags"`
 	LastCopied         string            `json:"lastCopied"`
+	LastRemoved        string            `json:"lastRemoved"`
 	TotalBytes         int64             `json:"totalBytes"`
 	TotalObjects       int               `json:"totalObjects"`
 }
@@ -84,9 +60,9 @@ type sessionMessage struct {
 	CommandArgs []string  `json:"commandArgs"`
 }
 
-// sessionV6 resumable session container.
-type sessionV6 struct {
-	Header    *sessionV6Header
+// sessionV7 resumable session container.
+type sessionV7 struct {
+	Header    *sessionV7Header
 	SessionID string
 	mutex     *sync.Mutex
 	DataFP    *sessionDataFP
@@ -105,7 +81,7 @@ func (file *sessionDataFP) Write(p []byte) (int, error) {
 }
 
 // String colorized session message.
-func (s sessionV6) String() string {
+func (s sessionV7) String() string {
 	message := console.Colorize("SessionID", fmt.Sprintf("%s -> ", s.SessionID))
 	message = message + console.Colorize("SessionTime", fmt.Sprintf("[%s]", s.Header.When.Local().Format(printDate)))
 	message = message + console.Colorize("Command", fmt.Sprintf(" %s %s", s.Header.CommandType, strings.Join(s.Header.CommandArgs, " ")))
@@ -113,7 +89,7 @@ func (s sessionV6) String() string {
 }
 
 // JSON jsonified session message.
-func (s sessionV6) JSON() string {
+func (s sessionV7) JSON() string {
 	sessionMsg := sessionMessage{
 		SessionID:   s.SessionID,
 		Time:        s.Header.When.Local(),
@@ -127,8 +103,8 @@ func (s sessionV6) JSON() string {
 	return string(sessionBytes)
 }
 
-// loadSessionV6 - reads session file if exists and re-initiates internal variables
-func loadSessionV6(sid string) (*sessionV6, *probe.Error) {
+// loadSessionV7 - reads session file if exists and re-initiates internal variables
+func loadSessionV7(sid string) (*sessionV7, *probe.Error) {
 	if !isSessionDirExists() {
 		return nil, errInvalidArgument().Trace()
 	}
@@ -141,10 +117,10 @@ func loadSessionV6(sid string) (*sessionV6, *probe.Error) {
 		return nil, probe.NewError(e)
 	}
 
-	s := &sessionV6{}
-	s.Header = &sessionV6Header{}
+	s := &sessionV7{}
+	s.Header = &sessionV7Header{}
 	s.SessionID = sid
-	s.Header.Version = "5"
+	s.Header.Version = "7"
 	qs, err := quick.New(s.Header)
 	if err != nil {
 		return nil, err.Trace(sid, s.Header.Version)
@@ -155,27 +131,27 @@ func loadSessionV6(sid string) (*sessionV6, *probe.Error) {
 	}
 
 	s.mutex = new(sync.Mutex)
-	s.Header = qs.Data().(*sessionV6Header)
+	s.Header = qs.Data().(*sessionV7Header)
 
 	sessionDataFile, err := getSessionDataFile(s.SessionID)
 	if err != nil {
 		return nil, err.Trace(sid, s.Header.Version)
 	}
 
-	var e error
 	dataFile, e := os.Open(sessionDataFile)
-	fatalIf(probe.NewError(e), "Unable to open session data file \""+sessionDataFile+"\".")
-
+	if e != nil {
+		return nil, probe.NewError(e)
+	}
 	s.DataFP = &sessionDataFP{false, dataFile}
 
 	return s, nil
 }
 
-// newSessionV6 provides a new session.
-func newSessionV6() *sessionV6 {
-	s := &sessionV6{}
-	s.Header = &sessionV6Header{}
-	s.Header.Version = "6"
+// newSessionV7 provides a new session.
+func newSessionV7() *sessionV7 {
+	s := &sessionV7{}
+	s.Header = &sessionV7Header{}
+	s.Header.Version = "7"
 	// map of command and files copied.
 	s.Header.GlobalBoolFlags = make(map[string]bool)
 	s.Header.GlobalIntFlags = make(map[string]int)
@@ -203,29 +179,26 @@ func newSessionV6() *sessionV6 {
 }
 
 // HasData provides true if this is a session resume, false otherwise.
-func (s sessionV6) HasData() bool {
-	if s.Header.LastCopied == "" {
-		return false
-	}
-	return true
+func (s sessionV7) HasData() bool {
+	return s.Header.LastCopied != "" || s.Header.LastRemoved != ""
 }
 
 // NewDataReader provides reader interface to session data file.
-func (s *sessionV6) NewDataReader() io.Reader {
+func (s *sessionV7) NewDataReader() io.Reader {
 	// DataFP is always intitialized, either via new or load functions.
 	s.DataFP.Seek(0, os.SEEK_SET)
 	return io.Reader(s.DataFP)
 }
 
 // NewDataReader provides writer interface to session data file.
-func (s *sessionV6) NewDataWriter() io.Writer {
+func (s *sessionV7) NewDataWriter() io.Writer {
 	// DataFP is always intitialized, either via new or load functions.
 	s.DataFP.Seek(0, os.SEEK_SET)
 	return io.Writer(s.DataFP)
 }
 
 // Save this session.
-func (s *sessionV6) Save() *probe.Error {
+func (s *sessionV7) Save() *probe.Error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -250,7 +223,7 @@ func (s *sessionV6) Save() *probe.Error {
 
 // setGlobals captures the state of global variables into session header.
 // Used by newSession.
-func (s *sessionV6) setGlobals() {
+func (s *sessionV7) setGlobals() {
 	s.Header.GlobalBoolFlags["quiet"] = globalQuiet
 	s.Header.GlobalBoolFlags["debug"] = globalDebug
 	s.Header.GlobalBoolFlags["json"] = globalJSON
@@ -259,7 +232,7 @@ func (s *sessionV6) setGlobals() {
 
 // RestoreGlobals restores the state of global variables.
 // Used by resumeSession.
-func (s sessionV6) restoreGlobals() {
+func (s sessionV7) restoreGlobals() {
 	quiet := s.Header.GlobalBoolFlags["quiet"]
 	debug := s.Header.GlobalBoolFlags["debug"]
 	json := s.Header.GlobalBoolFlags["json"]
@@ -267,8 +240,62 @@ func (s sessionV6) restoreGlobals() {
 	setGlobals(quiet, debug, json, noColor)
 }
 
+// IsModified - returns if in memory session header has changed from
+// its on disk value.
+func (s *sessionV7) isModified(sessionFile string) (bool, *probe.Error) {
+	qs, err := quick.New(s.Header)
+	if err != nil {
+		return false, err.Trace(s.SessionID)
+	}
+
+	var currentHeader = &sessionV7Header{}
+	currentQS, err := quick.Load(sessionFile, currentHeader)
+	if err != nil {
+		// If session does not exist for the first, return modified to
+		// be true.
+		if os.IsNotExist(err.ToGoError()) {
+			return true, nil
+		}
+		// For all other errors return.
+		return false, err.Trace(s.SessionID)
+	}
+
+	changedFields, err := qs.DeepDiff(currentQS)
+	if err != nil {
+		return false, err.Trace(s.SessionID)
+	}
+
+	// Returns true if there are changed entries.
+	return len(changedFields) > 0, nil
+}
+
+// save - wrapper for quick.Save and saves only if sessionHeader is
+// modified.
+func (s *sessionV7) save() *probe.Error {
+	sessionFile, err := getSessionFile(s.SessionID)
+	if err != nil {
+		return err.Trace(s.SessionID)
+	}
+
+	// Verify if sessionFile is modified.
+	modified, err := s.isModified(sessionFile)
+	if err != nil {
+		return err.Trace(s.SessionID)
+	}
+	// Header is modified, we save it.
+	if modified {
+		qs, err := quick.New(s.Header)
+		if err != nil {
+			return err.Trace(s.SessionID)
+		}
+		// Save an return.
+		return qs.Save(sessionFile).Trace(sessionFile)
+	}
+	return nil
+}
+
 // Close ends this session and removes all associated session files.
-func (s *sessionV6) Close() *probe.Error {
+func (s *sessionV7) Close() *probe.Error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -276,20 +303,12 @@ func (s *sessionV6) Close() *probe.Error {
 		return probe.NewError(err)
 	}
 
-	qs, err := quick.New(s.Header)
-	if err != nil {
-		return err.Trace()
-	}
-
-	sessionFile, err := getSessionFile(s.SessionID)
-	if err != nil {
-		return err.Trace(s.SessionID)
-	}
-	return qs.Save(sessionFile).Trace(sessionFile)
+	// Attempt to save the header if modified.
+	return s.save()
 }
 
 // Delete removes all the session files.
-func (s *sessionV6) Delete() *probe.Error {
+func (s *sessionV7) Delete() *probe.Error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -300,45 +319,50 @@ func (s *sessionV6) Delete() *probe.Error {
 		// the file is closed already
 		s.DataFP.Close()
 
+		// Remove the data file.
 		if e := os.Remove(name); e != nil {
 			return probe.NewError(e)
 		}
 	}
 
+	// Fetch the session file.
 	sessionFile, err := getSessionFile(s.SessionID)
 	if err != nil {
 		return err.Trace(s.SessionID)
 	}
 
+	// Remove session file
 	if e := os.Remove(sessionFile); e != nil {
 		return probe.NewError(e)
 	}
+
+	// Remove session backup file if any, ignore any error.
+	os.Remove(sessionFile + ".old")
 
 	return nil
 }
 
 // Close a session and exit.
-func (s sessionV6) CloseAndDie() {
+func (s sessionV7) CloseAndDie() {
 	s.Close()
 	console.Fatalln("Session safely terminated. To resume session ‘mc session resume " + s.SessionID + "’")
 }
 
-// Create a factory function to simplify checking if an
-// object has been copied or not.
-// isCopied(URL) -> true or false
-func isCopiedFactory(lastCopied string) func(string) bool {
-	copied := true // closure
+// Create a factory function to simplify checking if
+// object was last operated on.
+func isLastFactory(lastURL string) func(string) bool {
+	last := true // closure
 	return func(sourceURL string) bool {
 		if sourceURL == "" {
 			fatalIf(errInvalidArgument().Trace(), "Empty source argument passed.")
 		}
-		if lastCopied == "" {
+		if lastURL == "" {
 			return false
 		}
 
-		if copied {
-			if lastCopied == sourceURL {
-				copied = false // from next call onwards we say false.
+		if last {
+			if lastURL == sourceURL {
+				last = false // from next call onwards we say false.
 			}
 			return true
 		}

@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2015 Minio, Inc.
+ * Minio Client (C) 2015, 2016 Minio, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,8 +36,11 @@ func (m mirrorURLs) isEmpty() bool {
 	if m.SourceContent == nil && m.TargetContent == nil && m.Error == nil {
 		return true
 	}
-	if m.SourceContent.Size == 0 && m.TargetContent == nil && m.Error == nil {
-		return true
+	// If remove flag is set then sourceContent is usually nil.
+	if m.SourceContent != nil {
+		if m.SourceContent.Size == 0 && m.TargetContent == nil && m.Error == nil {
+			return true
+		}
 	}
 	return false
 }
@@ -74,7 +77,7 @@ func checkMirrorSyntax(ctx *cli.Context) {
 		fatalIf(errInvalidArgument().Trace(), "Invalid target arguments to mirror command.")
 	}
 
-	url := newURL(tgtURL)
+	url := newClientURL(tgtURL)
 	if url.Host != "" {
 		if !isURLVirtualHostStyle(url.Host) {
 			if url.Path == string(url.Separator) {
@@ -86,17 +89,17 @@ func checkMirrorSyntax(ctx *cli.Context) {
 	_, _, err = url2Stat(tgtURL)
 	// we die on any error other than PathNotFound - destination directory need not exist.
 	if _, ok := err.ToGoError().(PathNotFound); !ok {
-		fatalIf(err.Trace(tgtURL), fmt.Sprintf("Unable to stat %s", tgtURL))
+		fatalIf(err.Trace(tgtURL), fmt.Sprintf("Unable to stat target ‘%s’.", tgtURL))
 	}
 }
 
-func deltaSourceTargets(sourceURL string, targetURL string, isForce bool, mirrorURLsCh chan<- mirrorURLs) {
+func deltaSourceTarget(sourceURL string, targetURL string, isForce bool, isFake bool, isRemove bool, mirrorURLsCh chan<- mirrorURLs) {
 	// source and targets are always directories
-	sourceSeparator := string(newURL(sourceURL).Separator)
+	sourceSeparator := string(newClientURL(sourceURL).Separator)
 	if !strings.HasSuffix(sourceURL, sourceSeparator) {
 		sourceURL = sourceURL + sourceSeparator
 	}
-	targetSeparator := string(newURL(targetURL).Separator)
+	targetSeparator := string(newClientURL(targetURL).Separator)
 	if !strings.HasSuffix(targetURL, targetSeparator) {
 		targetURL = targetURL + targetSeparator
 	}
@@ -107,61 +110,84 @@ func deltaSourceTargets(sourceURL string, targetURL string, isForce bool, mirror
 
 	defer close(mirrorURLsCh)
 
-	objectDifferenceTarget, err := objectDifferenceFactory(targetAlias, targetURL)
-	if err != nil {
-		mirrorURLsCh <- mirrorURLs{Error: err.Trace(targetAlias, targetURL)}
-		return
-	}
-
-	sourceClient, err := newClientFromAlias(sourceAlias, sourceURL)
+	sourceClnt, err := newClientFromAlias(sourceAlias, sourceURL)
 	if err != nil {
 		mirrorURLsCh <- mirrorURLs{Error: err.Trace(sourceAlias, sourceURL)}
 		return
 	}
 
-	for sourceContent := range sourceClient.List(true, false) {
-		if sourceContent.Err != nil {
+	targetClnt, err := newClientFromAlias(targetAlias, targetURL)
+	if err != nil {
+		mirrorURLsCh <- mirrorURLs{Error: err.Trace(targetAlias, targetURL)}
+		return
+	}
+
+	// List both source and target, compare and return values through channel.
+	for diffMsg := range objectDifference(sourceClnt, targetClnt, sourceURL, targetURL) {
+		switch diffMsg.Diff {
+		case differInNone:
+			// No difference, continue.
+			continue
+		case differInType:
+			mirrorURLsCh <- mirrorURLs{Error: errInvalidTarget(diffMsg.SecondURL)}
+			continue
+		case differInSize:
+			if !isForce && !isFake {
+				// Size differs and force not set
+				mirrorURLsCh <- mirrorURLs{Error: errOverWriteNotAllowed(diffMsg.SecondURL)}
+				continue
+			}
+			sourceSuffix := strings.TrimPrefix(diffMsg.FirstURL, sourceURL)
+			// Either available only in source or size differs and force is set
+			targetPath := urlJoinPath(targetURL, sourceSuffix)
+			sourceContent := diffMsg.firstContent
+			targetContent := &clientContent{URL: *newClientURL(targetPath)}
 			mirrorURLsCh <- mirrorURLs{
-				Error: sourceContent.Err.Trace(sourceClient.GetURL().String()),
+				SourceAlias:   sourceAlias,
+				SourceContent: sourceContent,
+				TargetAlias:   targetAlias,
+				TargetContent: targetContent,
 			}
 			continue
-		}
-		if sourceContent.Type.IsDir() {
+		case differInFirst:
+			sourceSuffix := strings.TrimPrefix(diffMsg.FirstURL, sourceURL)
+			// Either available only in source or size differs and force is set
+			targetPath := urlJoinPath(targetURL, sourceSuffix)
+			sourceContent := diffMsg.firstContent
+			targetContent := &clientContent{URL: *newClientURL(targetPath)}
+			mirrorURLsCh <- mirrorURLs{
+				SourceAlias:   sourceAlias,
+				SourceContent: sourceContent,
+				TargetAlias:   targetAlias,
+				TargetContent: targetContent,
+			}
+		case differInSecond:
+			if isRemove {
+				if !isForce && !isFake {
+					// Object removal not allowed if force is not set.
+					mirrorURLsCh <- mirrorURLs{
+						Error: errDeleteNotAllowed(diffMsg.SecondURL),
+					}
+					continue
+				}
+				mirrorURLsCh <- mirrorURLs{
+					TargetAlias:   targetAlias,
+					TargetContent: diffMsg.secondContent,
+				}
+			}
 			continue
-		}
-		suffix := strings.TrimPrefix(sourceContent.URL.String(), sourceURL)
-		differ, err := objectDifferenceTarget(suffix, sourceContent.Type, sourceContent.Size)
-		if err != nil {
-			mirrorURLsCh <- mirrorURLs{Error: err.Trace(sourceContent.URL.String())}
+		default:
+			mirrorURLsCh <- mirrorURLs{
+				Error: errUnrecognizedDiffType(diffMsg.Diff).Trace(diffMsg.FirstURL, diffMsg.SecondURL),
+			}
 			continue
-		}
-		if differ == differNone {
-			// no difference, continue
-			continue
-		}
-		if differ == differType {
-			mirrorURLsCh <- mirrorURLs{Error: errInvalidTarget(suffix)}
-			continue
-		}
-		if differ == differSize && !isForce {
-			// size differs and force not set
-			mirrorURLsCh <- mirrorURLs{Error: errOverWriteNotAllowed(sourceContent.URL.String())}
-			continue
-		}
-		// either available only in source or size differs and force is set
-		targetPath := urlJoinPath(targetURL, suffix)
-		targetContent := &clientContent{URL: *newURL(targetPath)}
-		mirrorURLsCh <- mirrorURLs{
-			SourceAlias:   sourceAlias,
-			SourceContent: sourceContent,
-			TargetAlias:   targetAlias,
-			TargetContent: targetContent,
 		}
 	}
 }
 
-func prepareMirrorURLs(sourceURL string, targetURL string, isForce bool) <-chan mirrorURLs {
+// Prepares urls that need to be copied or removed based on requested options.
+func prepareMirrorURLs(sourceURL string, targetURL string, isForce bool, isFake bool, isRemove bool) <-chan mirrorURLs {
 	mirrorURLsCh := make(chan mirrorURLs)
-	go deltaSourceTargets(sourceURL, targetURL, isForce, mirrorURLsCh)
+	go deltaSourceTarget(sourceURL, targetURL, isForce, isFake, isRemove, mirrorURLsCh)
 	return mirrorURLsCh
 }

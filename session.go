@@ -28,6 +28,9 @@ import (
 func migrateSession() {
 	// We no longer support sessions older than v5. They will be removed.
 	migrateSessionV5ToV6()
+
+	// Migrate V6 to V7.
+	migrateSessionV6ToV7()
 }
 
 // createSessionDir - create session directory.
@@ -111,4 +114,22 @@ func getSessionIDs() (sids []string) {
 		sids = append(sids, strings.TrimSuffix(filepath.Base(path), ".json"))
 	}
 	return sids
+}
+
+// removeSessionFile - remove the session file, ending with .json
+func removeSessionFile(sid string) {
+	sessionFile, err := getSessionFile(sid)
+	if err != nil {
+		return
+	}
+	os.Remove(sessionFile)
+}
+
+// removeSessionDataFile - remove the session data file, ending with .data
+func removeSessionDataFile(sid string) {
+	dataFile, err := getSessionDataFile(sid)
+	if err != nil {
+		return
+	}
+	os.Remove(dataFile)
 }

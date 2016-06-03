@@ -23,12 +23,13 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/minio/mc/pkg/console"
 	"github.com/minio/minio/pkg/probe"
 )
 
 // Check if the target URL represents folder. It may or may not exist yet.
 func isTargetURLDir(targetURL string) bool {
-	targetURLParse := newURL(targetURL)
+	targetURLParse := newClientURL(targetURL)
 	_, targetContent, err := url2Stat(targetURL)
 	if err != nil {
 		_, aliasedTargetURL, _ := mustExpandAlias(targetURL)
@@ -95,6 +96,19 @@ func putTargetStream(urlStr string, reader io.Reader, size int64) (int64, *probe
 	return putTargetStreamFromAlias(alias, urlStrFull, reader, size, nil)
 }
 
+// copyTargetStreamFromAlias copies to URL from source.
+func copySourceStreamFromAlias(alias string, urlStr string, source string, size int64, progress io.Reader) *probe.Error {
+	targetClnt, err := newClientFromAlias(alias, urlStr)
+	if err != nil {
+		return err.Trace(alias, urlStr)
+	}
+	err = targetClnt.Copy(source, size, progress)
+	if err != nil {
+		return err.Trace(alias, urlStr)
+	}
+	return nil
+}
+
 // newClientFromAlias gives a new client interface for matching
 // alias entry in the mc config file. If no matching host config entry
 // is found, fs client is returned.
@@ -113,8 +127,32 @@ func newClientFromAlias(alias string, urlStr string) (Client, *probe.Error) {
 	// We have a valid alias and hostConfig. We populate the
 	// credentials from the match found in the config file.
 	s3Config := new(Config)
-	s3Config.AccessKey = hostCfg.AccessKey
-	s3Config.SecretKey = hostCfg.SecretKey
+
+	// secretKey retrieved from the environement overrides the one
+	// present in the config file
+	keysPairEnv := os.Getenv("MC_SECRET_" + alias)
+	keysPairArray := strings.Split(keysPairEnv, ":")
+	var accessKeyEnv, secretKeyEnv string
+	if len(keysPairArray) >= 1 {
+		accessKeyEnv = keysPairArray[0]
+	}
+	if len(keysPairArray) >= 2 {
+		secretKeyEnv = keysPairArray[1]
+	}
+	if len(keysPairEnv) > 0 &&
+		isValidAccessKey(accessKeyEnv) && isValidSecretKey(secretKeyEnv) {
+		s3Config.AccessKey = accessKeyEnv
+		s3Config.SecretKey = secretKeyEnv
+	} else {
+		if len(keysPairEnv) > 0 {
+			console.Errorln("Access/Secret keys associated to `" + alias + "' " +
+				"are found in your environment but not suitable for use. " +
+				"Falling back to the standard config.")
+		}
+		s3Config.AccessKey = hostCfg.AccessKey
+		s3Config.SecretKey = hostCfg.SecretKey
+	}
+
 	s3Config.Signature = hostCfg.API
 	s3Config.AppName = "mc"
 	s3Config.AppVersion = mcVersion

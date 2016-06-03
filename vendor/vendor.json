@@ -1,6 +1,6 @@
 {
 	"comment": "",
-	"ignore": "",
+	"ignore": "appengine test",
 	"package": [
 		{
 			"path": "github.com/dustin/go-humanize",
@@ -16,6 +16,11 @@
 			"path": "github.com/fatih/structs",
 			"revision": "5721d85c9a0e65ee65005e7da48c56612ae04ee3",
 			"revisionTime": "2015-08-20T22:35:37-07:00"
+		},
+		{
+			"path": "github.com/hashicorp/go-version",
+			"revision": "2e7f5ea8e27bb3fdf9baa0881d16757ac4637332",
+			"revisionTime": "2016-02-13T16:24:39-08:00"
 		},
 		{
 			"path": "github.com/mattn/go-colorable",
@@ -38,9 +43,10 @@
 			"revisionTime": "2015-10-24T22:24:27-07:00"
 		},
 		{
+			"checksumSHA1": "QHR5sfmPMTzDeOUjxw1bW3ipS4g=",
 			"path": "github.com/minio/minio-go",
-			"revision": "5576cd0f5a276b64973239ebe172aa8d2380f950",
-			"revisionTime": "2016-02-15T17:55:49-08:00"
+			"revision": "28fb30ae06c8cb43fb5dabd66930d7c4a19bb520",
+			"revisionTime": "2016-05-27T08:59:22Z"
 		},
 		{
 			"path": "github.com/minio/minio/pkg/atomic",
@@ -64,13 +70,18 @@
 		},
 		{
 			"path": "github.com/minio/pb",
-			"revision": "897f5fe4fea2d4f8f4dc07b7ede55a0489e26a00",
-			"revisionTime": "2016-02-19T09:37:49+03:00"
+			"revision": "1bf13e09a92ebfb601916804694e3a67e7e92da2",
+			"revisionTime": "2016-03-09T18:02:02-08:00"
 		},
 		{
 			"path": "github.com/olekukonko/ts",
 			"revision": "ecf753e7c962639ab5a1fb46f7da627d4c0a04b8",
 			"revisionTime": "2014-04-12T15:01:45-07:00"
+		},
+		{
+			"path": "github.com/pkg/profile",
+			"revision": "19396ecfda37c1c9ddaa52019adca59d582e4832",
+			"revisionTime": "2016-03-15T12:21:13+11:00"
 		},
 		{
 			"path": "golang.org/x/sys/unix",
@@ -82,5 +93,6 @@
 			"revision": "11d3bc7aa68e238947792f30573146a3231fc0f1",
 			"revisionTime": "2015-07-29T10:04:31+02:00"
 		}
-	]
+	],
+	"rootPath": "github.com/minio/mc"
 }

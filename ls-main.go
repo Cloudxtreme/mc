@@ -96,6 +96,11 @@ func checkListSyntax(ctx *cli.Context) {
 	for _, url := range URLs {
 		_, _, err := url2Stat(url)
 		if err != nil && !isURLPrefixExists(url, isIncomplete) {
+			// Bucket name empty is a valid error for 'ls myminio',
+			// treat it as such.
+			if _, ok := err.ToGoError().(BucketNameEmpty); ok {
+				continue
+			}
 			fatalIf(err.Trace(url), "Unable to stat ‘"+url+"’.")
 		}
 	}
@@ -129,6 +134,23 @@ func mainList(ctx *cli.Context) {
 		var clnt Client
 		clnt, err := newClient(targetURL)
 		fatalIf(err.Trace(targetURL), "Unable to initialize target ‘"+targetURL+"’.")
+
+		var st *clientContent
+		if st, err = clnt.Stat(); err != nil {
+			switch err.ToGoError().(type) {
+			case BucketNameEmpty:
+			// For aliases like ``mc ls s3`` it's acceptable to receive BucketNameEmpty error.
+			// Nothing to do.
+			default:
+				fatalIf(err.Trace(targetURL), "Unable to initialize target ‘"+targetURL+"’.")
+			}
+		} else if st.Type.IsDir() {
+			if !strings.HasSuffix(targetURL, string(clnt.GetURL().Separator)) {
+				targetURL = targetURL + string(clnt.GetURL().Separator)
+			}
+			clnt, err = newClient(targetURL)
+			fatalIf(err.Trace(targetURL), "Unable to initialize target ‘"+targetURL+"’.")
+		}
 
 		err = doList(clnt, isRecursive, isIncomplete)
 		if err != nil {

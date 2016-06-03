@@ -67,24 +67,29 @@ EXAMPLES:
 
 // diffMessage json container for diff messages
 type diffMessage struct {
-	Status    string       `json:"status"`
-	FirstURL  string       `json:"first"`
-	SecondURL string       `json:"second"`
-	Diff      string       `json:"diff"`
-	Error     *probe.Error `json:"error,omitempty"`
+	Status        string       `json:"status"`
+	FirstURL      string       `json:"first"`
+	SecondURL     string       `json:"second"`
+	Diff          differType   `json:"diff"`
+	Error         *probe.Error `json:"error,omitempty"`
+	firstContent  *clientContent
+	secondContent *clientContent
 }
 
 // String colorized diff message
 func (d diffMessage) String() string {
 	msg := ""
 	switch d.Diff {
-	case "only-in-first":
+	case differInFirst:
 		msg = console.Colorize("DiffMessage",
-			"‘"+d.FirstURL+"’"+" and "+"‘"+d.SecondURL+"’") + console.Colorize("DiffOnlyInFirst", " - only in first.")
-	case "type":
+			"‘"+d.FirstURL+"’") + console.Colorize("DiffOnlyInFirst", " - only in first.")
+	case differInSecond:
+		msg = console.Colorize("DiffMessage",
+			"‘"+d.SecondURL+"’") + console.Colorize("DiffOnlyInSecond", " - only in second.")
+	case differInType:
 		msg = console.Colorize("DiffMessage",
 			"‘"+d.FirstURL+"’"+" and "+"‘"+d.SecondURL+"’") + console.Colorize("DiffType", " - differ in type.")
-	case "size":
+	case differInSize:
 		msg = console.Colorize("DiffMessage",
 			"‘"+d.FirstURL+"’"+" and "+"‘"+d.SecondURL+"’") + console.Colorize("DiffSize", " - differ in size.")
 	default:
@@ -100,7 +105,7 @@ func (d diffMessage) JSON() string {
 	d.Status = "success"
 	diffJSONBytes, e := json.Marshal(d)
 	fatalIf(probe.NewError(e),
-		"Unable to marshal diff message ‘"+d.FirstURL+"’, ‘"+d.SecondURL+"’ and ‘"+d.Diff+"’.")
+		"Unable to marshal diff message ‘"+d.FirstURL+"’, ‘"+d.SecondURL+"’ and ‘"+string(d.Diff)+"’.")
 	return string(diffJSONBytes)
 }
 
@@ -124,6 +129,7 @@ func checkDiffSyntax(ctx *cli.Context) {
 	if err != nil {
 		fatalIf(err.Trace(firstURL), fmt.Sprintf("Unable to stat '%s'.", firstURL))
 	}
+
 	// Verify if its a directory.
 	if !firstContent.Type.IsDir() {
 		fatalIf(errInvalidArgument().Trace(firstURL), fmt.Sprintf("‘%s’ is not a folder.", firstURL))
@@ -134,6 +140,7 @@ func checkDiffSyntax(ctx *cli.Context) {
 	if err != nil {
 		fatalIf(err.Trace(secondURL), fmt.Sprintf("Unable to stat '%s'.", secondURL))
 	}
+
 	// Verify if its a directory.
 	if !secondContent.Type.IsDir() {
 		fatalIf(errInvalidArgument().Trace(secondURL), fmt.Sprintf("‘%s’ is not a folder.", secondURL))
@@ -143,11 +150,11 @@ func checkDiffSyntax(ctx *cli.Context) {
 // doDiffMain runs the diff.
 func doDiffMain(firstURL, secondURL string) {
 	// Source and targets are always directories
-	sourceSeparator := string(newURL(firstURL).Separator)
+	sourceSeparator := string(newClientURL(firstURL).Separator)
 	if !strings.HasSuffix(firstURL, sourceSeparator) {
 		firstURL = firstURL + sourceSeparator
 	}
-	targetSeparator := string(newURL(secondURL).Separator)
+	targetSeparator := string(newClientURL(secondURL).Separator)
 	if !strings.HasSuffix(secondURL, targetSeparator) {
 		secondURL = secondURL + targetSeparator
 	}
@@ -161,42 +168,16 @@ func doDiffMain(firstURL, secondURL string) {
 		fatalIf(err.Trace(firstAlias, firstURL, secondAlias, secondURL),
 			fmt.Sprintf("Failed to diff '%s' and '%s'", firstURL, secondURL))
 	}
-	difference, err := objectDifferenceFactory(secondAlias, secondURL)
+
+	secondClient, err := newClientFromAlias(secondAlias, secondURL)
 	if err != nil {
 		fatalIf(err.Trace(firstAlias, firstURL, secondAlias, secondURL),
 			fmt.Sprintf("Failed to diff '%s' and '%s'", firstURL, secondURL))
 	}
-	isRecursive := true
-	isIncomplete := false
-	for sourceContent := range firstClient.List(isRecursive, isIncomplete) {
-		if sourceContent.Err != nil {
-			switch sourceContent.Err.ToGoError().(type) {
-			// Handle this specifically for filesystem related errors.
-			case BrokenSymlink, TooManyLevelsSymlink, PathNotFound, PathInsufficientPermission:
-				errorIf(sourceContent.Err.Trace(firstURL, secondURL), fmt.Sprintf("Failed on '%s'", firstURL))
-			default:
-				fatalIf(sourceContent.Err.Trace(firstURL, secondURL), fmt.Sprintf("Failed on '%s'", firstURL))
-			}
-			continue
-		}
-		if sourceContent.Type.IsDir() {
-			continue
-		}
-		suffix := strings.TrimPrefix(sourceContent.URL.String(), firstURL)
-		differ, err := difference(suffix, sourceContent.Type, sourceContent.Size)
-		if err != nil {
-			errorIf(sourceContent.Err.Trace(secondURL, suffix),
-				fmt.Sprintf("Failed on '%s'", urlJoinPath(secondURL, suffix)))
-			continue
-		}
-		if differ == differNone {
-			continue
-		}
-		printMsg(diffMessage{
-			FirstURL:  sourceContent.URL.String(),
-			SecondURL: urlJoinPath(secondURL, suffix),
-			Diff:      differ,
-		})
+
+	// Diff first and second urls.
+	for diffMsg := range objectDifference(firstClient, secondClient, firstURL, secondURL) {
+		printMsg(diffMsg)
 	}
 }
 
@@ -213,6 +194,7 @@ func mainDiff(ctx *cli.Context) {
 	console.SetColor("DiffOnlyInFirst", color.New(color.FgRed, color.Bold))
 	console.SetColor("DiffType", color.New(color.FgYellow, color.Bold))
 	console.SetColor("DiffSize", color.New(color.FgMagenta, color.Bold))
+	console.SetColor("DiffTime", color.New(color.FgYellow, color.Bold))
 
 	URLs := ctx.Args()
 	firstURL := URLs[0]

@@ -24,6 +24,7 @@ import (
 
 	"net/http/httptest"
 
+	"github.com/hashicorp/go-version"
 	"github.com/minio/cli"
 	. "gopkg.in/check.v1"
 )
@@ -46,18 +47,38 @@ func (s *TestSuite) TearDownSuite(c *C) {
 }
 
 func (s *TestSuite) TestValidPERMS(c *C) {
-	perms := accessPerms("private")
+	perms := accessPerms("none")
 	c.Assert(perms.isValidAccessPERM(), Equals, true)
-	c.Assert(perms.String(), Equals, "private")
-	perms = accessPerms("public")
+	c.Assert(string(perms), Equals, "none")
+	perms = accessPerms("readwrite")
 	c.Assert(perms.isValidAccessPERM(), Equals, true)
-	c.Assert(perms.String(), Equals, "public-read-write")
+	c.Assert(string(perms), Equals, "readwrite")
 	perms = accessPerms("readonly")
 	c.Assert(perms.isValidAccessPERM(), Equals, true)
-	c.Assert(perms.String(), Equals, "public-read")
-	perms = accessPerms("authorized")
+	c.Assert(string(perms), Equals, "readonly")
+	perms = accessPerms("writeonly")
 	c.Assert(perms.isValidAccessPERM(), Equals, true)
-	c.Assert(perms.String(), Equals, "authenticated-read")
+	c.Assert(string(perms), Equals, "writeonly")
+}
+
+// Tests valid and invalid secret keys.
+func (s *TestSuite) TestValidSecretKeys(c *C) {
+	c.Assert(isValidSecretKey("password"), Equals, true)
+	c.Assert(isValidSecretKey("BYvgJM101sHngl2uzjXS/OBF/aMxAN06JrJ3qJlF"), Equals, true)
+
+	c.Assert(isValidSecretKey("aaa"), Equals, false)
+	c.Assert(isValidSecretKey("password%%"), Equals, false)
+}
+
+// Tests valid and invalid access keys.
+func (s *TestSuite) TestValidAccessKeys(c *C) {
+	c.Assert(isValidAccessKey("c67W2-r4MAyAYScRl"), Equals, true)
+	c.Assert(isValidAccessKey("EXOb76bfeb1234562iu679f11588"), Equals, true)
+	c.Assert(isValidAccessKey("BYvgJM101sHngl2uzjXS/OBF/aMxAN06JrJ3qJlF"), Equals, true)
+	c.Assert(isValidAccessKey("admin"), Equals, true)
+
+	c.Assert(isValidAccessKey("aaa"), Equals, false)
+	c.Assert(isValidAccessKey("$$%%%%%3333"), Equals, false)
 }
 
 func (s *TestSuite) TestInvalidPERMS(c *C) {
@@ -121,8 +142,9 @@ func (s *TestSuite) TestCommonPrefix(c *C) {
 }
 
 func (s *TestSuite) TestVersions(c *C) {
-	v1 := newVersion("1.6")
-	v2 := newVersion("1.5.0")
-	c.Assert(v2.LessThan(v1), Equals, true)
-	c.Assert(v1.LessThan(v2), Equals, false)
+	v1, e := version.NewVersion("1.6")
+	c.Assert(e, IsNil)
+	v2, e := version.NewConstraint(">= 1.5.0")
+	c.Assert(e, IsNil)
+	c.Assert(v2.Check(v1), Equals, true)
 }

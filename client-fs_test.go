@@ -22,6 +22,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	. "gopkg.in/check.v1"
 )
@@ -110,7 +111,7 @@ func (s *TestSuite) TestList(c *C) {
 	}
 
 	c.Assert(err, IsNil)
-	c.Assert(len(contents), Equals, 5)
+	c.Assert(len(contents), Equals, 3)
 
 	var regularFiles int
 	var regularDirs int
@@ -125,8 +126,53 @@ func (s *TestSuite) TestList(c *C) {
 			continue
 		}
 	}
-	c.Assert(regularDirs, Equals, 2)
+	c.Assert(regularDirs, Equals, 0)
 	c.Assert(regularFiles, Equals, 3)
+
+	// Create an ignored file and list to verify if its ignored.
+	objectPath = filepath.Join(root, "test1/.DS_Store")
+	fsClient, err = fsNew(objectPath)
+
+	reader = bytes.NewReader([]byte(data))
+	n, err = fsClient.Put(reader, int64(len(data)), "application/octet-stream", nil)
+	c.Assert(err, IsNil)
+	c.Assert(n, Equals, int64(len(data)))
+
+	fsClient, err = fsNew(root)
+	c.Assert(err, IsNil)
+
+	contents = nil
+	// List recursively all files and verify.
+	for content := range fsClient.List(true, false) {
+		if content.Err != nil {
+			err = content.Err
+			break
+		}
+		contents = append(contents, content)
+	}
+
+	c.Assert(err, IsNil)
+	switch runtime.GOOS {
+	case "darwin":
+		c.Assert(len(contents), Equals, 3)
+	default:
+		c.Assert(len(contents), Equals, 4)
+	}
+
+	regularFiles = 0
+	// Test number of expected files.
+	for _, content := range contents {
+		if content.Type.IsRegular() {
+			regularFiles++
+			continue
+		}
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		c.Assert(regularFiles, Equals, 3)
+	default:
+		c.Assert(regularFiles, Equals, 4)
+	}
 }
 
 // Test put bucket aka 'mkdir()' operation.
@@ -170,11 +216,14 @@ func (s *TestSuite) TestBucketACLFails(c *C) {
 	err = fsClient.MakeBucket("us-east-1")
 	c.Assert(err, IsNil)
 
-	err = fsClient.SetBucketAccess("private")
-	c.Assert(err, Not(IsNil))
+	// On windows setting permissions is not supported.
+	if runtime.GOOS != "windows" {
+		err = fsClient.SetAccess("readonly")
+		c.Assert(err, IsNil)
 
-	_, err = fsClient.GetBucketAccess()
-	c.Assert(err, Not(IsNil))
+		_, err = fsClient.GetAccess()
+		c.Assert(err, IsNil)
+	}
 }
 
 // Test creating a file.
@@ -270,4 +319,26 @@ func (s *TestSuite) TestStatObject(c *C) {
 	content, err := fsClient.Stat()
 	c.Assert(err, IsNil)
 	c.Assert(content.Size, Equals, int64(dataLen))
+}
+
+// Test copy.
+func (s *TestSuite) TestCopy(c *C) {
+	root, e := ioutil.TempDir(os.TempDir(), "fs-")
+	c.Assert(e, IsNil)
+	defer os.RemoveAll(root)
+	sourcePath := filepath.Join(root, "source")
+	targetPath := filepath.Join(root, "target")
+	fsClientTarget, err := fsNew(targetPath)
+	fsClientSource, err := fsNew(sourcePath)
+	c.Assert(err, IsNil)
+
+	data := "hello world"
+	var reader io.Reader
+	reader = bytes.NewReader([]byte(data))
+	n, err := fsClientSource.Put(reader, int64(len(data)), "application/octet-stream", nil)
+	c.Assert(err, IsNil)
+	c.Assert(n, Equals, int64(len(data)))
+
+	err = fsClientTarget.Copy(sourcePath, int64(len(data)), nil)
+	c.Assert(err, IsNil)
 }
