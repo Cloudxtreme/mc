@@ -1,7 +1,7 @@
 /*
  * Quick - Quick key value store for config files and persistent state files
  *
- * Minio Client (C) 2015 Minio, Inc.
+ * Quick (C) 2015, 2016, 2017 Minio, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,178 +19,41 @@
 package quick
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"reflect"
-	"runtime"
-	"strings"
 	"sync"
 
+	etcd "github.com/coreos/etcd/client"
 	"github.com/fatih/structs"
-	"github.com/minio/minio/pkg/atomic"
-	"github.com/minio/minio/pkg/probe"
+	"github.com/minio/minio/pkg/safe"
 )
 
 // Config - generic config interface functions
 type Config interface {
 	String() string
 	Version() string
-	Save(string) *probe.Error
-	Load(string) *probe.Error
+	Save(string) error
+	Load(string) error
 	Data() interface{}
-	Diff(Config) ([]structs.Field, *probe.Error)
-	DeepDiff(Config) ([]structs.Field, *probe.Error)
+	Diff(Config) ([]structs.Field, error)
+	DeepDiff(Config) ([]structs.Field, error)
 }
 
 // config - implements quick.Config interface
 type config struct {
 	data interface{}
+	clnt etcd.Client
 	lock *sync.RWMutex
-}
-
-// CheckData - checks the validity of config data. Data should be of
-// type struct and contain a string type field called "Version".
-func CheckData(data interface{}) *probe.Error {
-	if !structs.IsStruct(data) {
-		return probe.NewError(fmt.Errorf("Invalid argument type. Expecing \"struct\" type."))
-	}
-
-	st := structs.New(data)
-	f, ok := st.FieldOk("Version")
-	if !ok {
-		return probe.NewError(fmt.Errorf("Invalid type of struct argument. No [%s.Version] field found.", st.Name()))
-	}
-
-	if f.Kind() != reflect.String {
-		return probe.NewError(fmt.Errorf("Invalid type of struct argument. Expecting \"string\" type [%s.Version] field.", st.Name()))
-	}
-
-	return nil
-}
-
-// New - instantiate a new config
-func New(data interface{}) (Config, *probe.Error) {
-	if err := CheckData(data); err != nil {
-		return nil, err.Trace()
-	}
-
-	d := new(config)
-	d.data = data
-	d.lock = new(sync.RWMutex)
-	return d, nil
-}
-
-// CheckVersion - loads json and compares the version number provided returns back true or false - any failure
-// is returned as error.
-func CheckVersion(filename string, version string) (bool, *probe.Error) {
-	_, e := os.Stat(filename)
-	if e != nil {
-		return false, probe.NewError(e)
-	}
-
-	fileData, e := ioutil.ReadFile(filename)
-	if e != nil {
-		return false, probe.NewError(e)
-	}
-
-	if runtime.GOOS == "windows" {
-		fileData = []byte(strings.Replace(string(fileData), "\r\n", "\n", -1))
-	}
-	data := struct {
-		Version string
-	}{
-		Version: "",
-	}
-	e = json.Unmarshal(fileData, &data)
-	if e != nil {
-		switch e := e.(type) {
-		case *json.SyntaxError:
-			return false, probe.NewError(FormatJSONSyntaxError(bytes.NewReader(fileData), e))
-		default:
-			return false, probe.NewError(e)
-		}
-	}
-	config, err := New(data)
-	if err != nil {
-		return false, err.Trace()
-	}
-	if config.Version() != version {
-		return false, nil
-	}
-	return true, nil
-}
-
-// Load - loads json config from filename for the a given struct data
-func Load(filename string, data interface{}) (Config, *probe.Error) {
-	_, e := os.Stat(filename)
-	if e != nil {
-		return nil, probe.NewError(e)
-	}
-
-	fileData, e := ioutil.ReadFile(filename)
-	if e != nil {
-		return nil, probe.NewError(e)
-	}
-
-	if runtime.GOOS == "windows" {
-		fileData = []byte(strings.Replace(string(fileData), "\r\n", "\n", -1))
-	}
-
-	e = json.Unmarshal(fileData, &data)
-	if e != nil {
-		switch e := e.(type) {
-		case *json.SyntaxError:
-			return nil, probe.NewError(FormatJSONSyntaxError(bytes.NewReader(fileData), e))
-		default:
-			return nil, probe.NewError(e)
-		}
-	}
-
-	config, err := New(data)
-	if err != nil {
-		return nil, err.Trace()
-	}
-
-	return config, nil
 }
 
 // Version returns the current config file format version
 func (d config) Version() string {
 	st := structs.New(d.data)
-
-	f, ok := st.FieldOk("Version")
-	if !ok {
-		return ""
-	}
-
-	val := f.Value()
-	ver, ok := val.(string)
-	if ok {
-		return ver
-	}
-	return ""
-}
-
-// writeFile writes data to a file named by filename.
-// If the file does not exist, writeFile creates it;
-// otherwise writeFile truncates it before writing.
-func writeFile(filename string, data []byte) *probe.Error {
-	atomicFile, e := atomic.FileCreate(filename)
-	if e != nil {
-		return probe.NewError(e)
-	}
-	_, e = atomicFile.Write(data)
-	if e != nil {
-		return probe.NewError(e)
-	}
-	e = atomicFile.Close()
-	if e != nil {
-		return probe.NewError(e)
-	}
-	return nil
+	f := st.Field("Version")
+	return f.Value().(string)
 }
 
 // String converts JSON config to printable string
@@ -199,93 +62,46 @@ func (d config) String() string {
 	return string(configBytes)
 }
 
-// Save writes config data in JSON format to a file.
-func (d config) Save(filename string) *probe.Error {
+// Save writes config data to a file. Data format
+// is selected based on file extension or JSON if
+// not provided.
+func (d config) Save(filename string) error {
 	d.lock.Lock()
 	defer d.lock.Unlock()
 
-	// Check for existing file, if yes create a backup.
-	st, e := os.Stat(filename)
-	// If file exists and stat failed return here.
-	if e != nil && !os.IsNotExist(e) {
-		return probe.NewError(e)
-	}
-	// File exists and proceed to take backup.
-	if e == nil {
-		// File exists and is not a regular file return error.
-		if !st.Mode().IsRegular() {
-			return probe.NewError(fmt.Errorf("%s is not a regular file", filename))
-		}
-		// Read old data.
-		var oldData []byte
-		oldData, e = ioutil.ReadFile(filename)
-		if e != nil {
-			return probe.NewError(e)
-		}
-		// Save read data to the backup file.
-		if err := writeFile(filename+".old", oldData); err != nil {
-			return err.Trace(filename + ".old")
-		}
-	}
-	// Proceed to create or overwrite file.
-	jsonData, e := json.MarshalIndent(d.data, "", "\t")
-	if e != nil {
-		return probe.NewError(e)
+	if d.clnt != nil {
+		return saveFileConfigEtcd(filename, d.clnt, d.data)
 	}
 
-	if runtime.GOOS == "windows" {
-		jsonData = []byte(strings.Replace(string(jsonData), "\n", "\r\n", -1))
+	// Backup if given file exists
+	oldData, err := ioutil.ReadFile(filename)
+	if err != nil {
+		// Ignore if file does not exist.
+		if !os.IsNotExist(err) {
+			return err
+		}
+	} else {
+		// Save read data to the backup file.
+		backupFilename := filename + ".old"
+		if err = writeFile(backupFilename, oldData); err != nil {
+			return err
+		}
 	}
 
 	// Save data.
-	err := writeFile(filename, jsonData)
-	return err.Trace(filename)
+	return saveFileConfig(filename, d.data)
 }
 
-// Load - loads JSON config from file and merge with currently set values
-func (d *config) Load(filename string) *probe.Error {
+// Load - loads config from file and merge with currently set values
+// File content format is guessed from the file name extension, if not
+// available, consider that we have JSON.
+func (d config) Load(filename string) error {
 	d.lock.Lock()
 	defer d.lock.Unlock()
-
-	_, e := os.Stat(filename)
-	if e != nil {
-		return probe.NewError(e)
+	if d.clnt != nil {
+		return loadFileConfigEtcd(filename, d.clnt, d.data)
 	}
-
-	fileData, e := ioutil.ReadFile(filename)
-	if e != nil {
-		return probe.NewError(e)
-	}
-
-	if runtime.GOOS == "windows" {
-		fileData = []byte(strings.Replace(string(fileData), "\r\n", "\n", -1))
-	}
-
-	st := structs.New(d.data)
-	f, ok := st.FieldOk("Version")
-	if !ok {
-		return probe.NewError(fmt.Errorf("Argument struct [%s] does not contain field \"Version\".", st.Name()))
-	}
-
-	e = json.Unmarshal(fileData, d.data)
-	if e != nil {
-		switch e := e.(type) {
-		case *json.SyntaxError:
-			return probe.NewError(FormatJSONSyntaxError(bytes.NewReader(fileData), e))
-		default:
-			return probe.NewError(e)
-		}
-	}
-
-	if err := CheckData(d.data); err != nil {
-		return err.Trace(filename)
-	}
-
-	if (*d).Version() != f.Value() {
-		return probe.NewError(fmt.Errorf("Version mismatch"))
-	}
-
-	return nil
+	return loadFileConfig(filename, d.data)
 }
 
 // Data - grab internal data map for reading
@@ -293,18 +109,14 @@ func (d config) Data() interface{} {
 	return d.data
 }
 
-//Diff  - list fields that are in A but not in B
-func (d config) Diff(c Config) ([]structs.Field, *probe.Error) {
+// Diff  - list fields that are in A but not in B
+func (d config) Diff(c Config) ([]structs.Field, error) {
 	var fields []structs.Field
-	err := CheckData(c.Data())
-	if err != nil {
-		return []structs.Field{}, err.Trace()
-	}
 
 	currFields := structs.Fields(d.Data())
 	newFields := structs.Fields(c.Data())
 
-	found := false
+	var found bool
 	for _, currField := range currFields {
 		found = false
 		for _, newField := range newFields {
@@ -319,18 +131,14 @@ func (d config) Diff(c Config) ([]structs.Field, *probe.Error) {
 	return fields, nil
 }
 
-//DeepDiff  - list fields in A that are missing or not equal to fields in B
-func (d config) DeepDiff(c Config) ([]structs.Field, *probe.Error) {
+// DeepDiff  - list fields in A that are missing or not equal to fields in B
+func (d config) DeepDiff(c Config) ([]structs.Field, error) {
 	var fields []structs.Field
-	err := CheckData(c.Data())
-	if err != nil {
-		return []structs.Field{}, err.Trace()
-	}
 
 	currFields := structs.Fields(d.Data())
 	newFields := structs.Fields(c.Data())
 
-	found := false
+	var found bool
 	for _, currField := range currFields {
 		found = false
 		for _, newField := range newFields {
@@ -343,4 +151,87 @@ func (d config) DeepDiff(c Config) ([]structs.Field, *probe.Error) {
 		}
 	}
 	return fields, nil
+}
+
+// checkData - checks the validity of config data. Data should be of
+// type struct and contain a string type field called "Version".
+func checkData(data interface{}) error {
+	if !structs.IsStruct(data) {
+		return fmt.Errorf("interface must be struct type")
+	}
+
+	st := structs.New(data)
+	f, ok := st.FieldOk("Version")
+	if !ok {
+		return fmt.Errorf("struct ‘%s’ must have field ‘Version’", st.Name())
+	}
+
+	if f.Kind() != reflect.String {
+		return fmt.Errorf("‘Version’ field in struct ‘%s’ must be a string type", st.Name())
+	}
+
+	return nil
+}
+
+// writeFile writes data to a file named by filename.
+// If the file does not exist, writeFile creates it;
+// otherwise writeFile truncates it before writing.
+func writeFile(filename string, data []byte) error {
+	safeFile, err := safe.CreateFile(filename)
+	if err != nil {
+		return err
+	}
+	_, err = safeFile.Write(data)
+	if err != nil {
+		return err
+	}
+	return safeFile.Close()
+}
+
+// GetVersion - extracts the version information.
+func GetVersion(filename string, clnt etcd.Client) (version string, err error) {
+	var qc Config
+	qc, err = LoadConfig(filename, clnt, &struct {
+		Version string
+	}{})
+	if err != nil {
+		return "", err
+	}
+	return qc.Version(), nil
+}
+
+// LoadConfig - loads json config from filename for the a given struct data
+func LoadConfig(filename string, clnt etcd.Client, data interface{}) (qc Config, err error) {
+	qc, err = NewConfig(data, clnt)
+	if err != nil {
+		return nil, err
+	}
+	return qc, qc.Load(filename)
+}
+
+// SaveConfig - saves given configuration data into given file as JSON.
+func SaveConfig(data interface{}, filename string, clnt etcd.Client) (err error) {
+	if err = checkData(data); err != nil {
+		return err
+	}
+	var qc Config
+	qc, err = NewConfig(data, clnt)
+	if err != nil {
+		return err
+	}
+	return qc.Save(filename)
+}
+
+// NewConfig loads config from etcd client if provided, otherwise loads from a local filename.
+// fails when all else fails.
+func NewConfig(data interface{}, clnt etcd.Client) (cfg Config, err error) {
+	if err := checkData(data); err != nil {
+		return nil, err
+	}
+
+	d := new(config)
+	d.data = data
+	d.clnt = clnt
+	d.lock = new(sync.RWMutex)
+	return d, nil
 }

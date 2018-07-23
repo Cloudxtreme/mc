@@ -1,92 +1,100 @@
+PWD := $(shell pwd)
+GOPATH := $(shell go env GOPATH)
 LDFLAGS := $(shell go run buildscripts/gen-ldflags.go)
 
-all: install
+BUILD_LDFLAGS := '$(LDFLAGS)'
+
+all: build
 
 checks:
-	@echo "Checking deps:"
-	@(env bash buildscripts/checkdeps.sh)
-	@(env bash buildscripts/checkgopath.sh)
+	@echo "Checking dependencies"
+	@(env bash $(PWD)/buildscripts/checkdeps.sh)
+	@echo "Checking for project in GOPATH"
+	@(env bash $(PWD)/buildscripts/checkgopath.sh)
 
-getdeps: checks
-	@go get github.com/golang/lint/golint && echo "Installed golint:"
-	@go get github.com/fzipp/gocyclo && echo "Installed gocyclo:"
-	@go get github.com/remyoudompheng/go-misc/deadcode && echo "Installed deadcode:"
-	@go get github.com/client9/misspell/cmd/misspell && echo "Installed misspell:"
+getdeps:
+	@echo "Installing golint" && go get -u github.com/golang/lint/golint
+	@echo "Installing gocyclo" && go get -u github.com/fzipp/gocyclo
+	@echo "Installing deadcode" && go get -u github.com/remyoudompheng/go-misc/deadcode
+	@echo "Installing misspell" && go get -u github.com/client9/misspell/cmd/misspell
+	@echo "Installing ineffassign" && go get -u github.com/gordonklaus/ineffassign
 
-# verifiers: getdeps vet fmt lint cyclo deadcode
-verifiers: vet fmt lint cyclo deadcode spelling
+verifiers: getdeps vet fmt lint cyclo deadcode spelling
 
 vet:
-	@echo "Running $@:"
-	@GO15VENDOREXPERIMENT=1 go tool vet -all *.go
-	@GO15VENDOREXPERIMENT=1 go tool vet -all ./pkg
-	@GO15VENDOREXPERIMENT=1 go tool vet -shadow=true *.go
-	@GO15VENDOREXPERIMENT=1 go tool vet -shadow=true ./pkg
-
-spelling:
-	@GO15VENDOREXPERIMENT=1 ${GOPATH}/bin/misspell *.go
-	@GO15VENDOREXPERIMENT=1 ${GOPATH}/bin/misspell pkg/**/*
+	@echo "Running $@"
+	@go tool vet -atomic -bool -copylocks -nilfunc -printf -shadow -rangeloops -unreachable -unsafeptr -unusedresult cmd
+	@go tool vet -atomic -bool -copylocks -nilfunc -printf -shadow -rangeloops -unreachable -unsafeptr -unusedresult pkg
 
 fmt:
-	@echo "Running $@:"
-	@GO15VENDOREXPERIMENT=1 gofmt -s -l *.go
-	@GO15VENDOREXPERIMENT=1 gofmt -s -l pkg
+	@echo "Running $@"
+	@gofmt -d cmd
+	@gofmt -d pkg
+
 lint:
-	@echo "Running $@:"
-	@GO15VENDOREXPERIMENT=1 $(GOPATH)/bin/golint .
-	@GO15VENDOREXPERIMENT=1 $(GOPATH)/bin/golint github.com/minio/mc/pkg...
+	@echo "Running $@"
+	@${GOPATH}/bin/golint -set_exit_status github.com/minio/mc/cmd...
+	@${GOPATH}/bin/golint -set_exit_status github.com/minio/mc/pkg...
+
+ineffassign:
+	@echo "Running $@"
+	@${GOPATH}/bin/ineffassign .
 
 cyclo:
-	@echo "Running $@:"
-	@GO15VENDOREXPERIMENT=1 $(GOPATH)/bin/gocyclo -over 40 *.go
-	@GO15VENDOREXPERIMENT=1 $(GOPATH)/bin/gocyclo -over 40 pkg
+	@echo "Running $@"
+	@${GOPATH}/bin/gocyclo -over 100 cmd
+	@${GOPATH}/bin/gocyclo -over 100 pkg
 
 deadcode:
-	@echo "Running $@:"
-	@GO15VENDOREXPERIMENT=1 $(GOPATH)/bin/deadcode
+	@echo "Running $@"
+	@${GOPATH}/bin/deadcode -test $(shell go list ./...)
 
-build: getdeps verifiers
-	@echo "Installing mc:"
+spelling:
+	@${GOPATH}/bin/misspell -error `find cmd/`
+	@${GOPATH}/bin/misspell -error `find pkg/`
+	@${GOPATH}/bin/misspell -error `find docs/`
 
-test: getdeps verifiers
-	@echo "Running all testing:"
-	@GO15VENDOREXPERIMENT=1 go test $(GOFLAGS) ./
-	@GO15VENDOREXPERIMENT=1 go test $(GOFLAGS) github.com/minio/mc/pkg...
+# Builds minio, runs the verifiers then runs the tests.
+check: test
+test: verifiers build
+	@echo "Running unit tests"
+	@go test $(GOFLAGS) -tags kqueue ./...
+	@echo "Running functional tests"
+	@(env bash $(PWD)/functional-tests.sh)
 
-gomake-all: build
-	@GO15VENDOREXPERIMENT=1 go build --ldflags "$(LDFLAGS)" -o $(GOPATH)/bin/mc
-	@mkdir -p $(HOME)/.mc
+coverage: build
+	@echo "Running all coverage for minio"
+	@(env bash $(PWD)/buildscripts/go-coverage.sh)
 
-coverage:
-	@GO15VENDOREXPERIMENT=1 go test -race -coverprofile=cover.out ./
-	@go tool cover -html=cover.out && echo "Visit your browser"
+# Builds minio locally.
+build: checks
+	@echo "Building minio binary to './mc'"
+	@CGO_ENABLED=0 go build -tags kqueue --ldflags $(BUILD_LDFLAGS) -o $(PWD)/mc
 
 pkg-add:
-	@GO15VENDOREXPERIMENT=1 $(GOPATH)/bin/govendor add $(PKG)
+	@echo "Adding new package $(PKG)"
+	@${GOPATH}/bin/govendor add $(PKG)
 
 pkg-update:
-	@GO15VENDOREXPERIMENT=1 $(GOPATH)/bin/govendor update $(PKG)
+	@echo "Updating new package $(PKG)"
+	@${GOPATH}/bin/govendor update $(PKG)
 
 pkg-remove:
-	@GO15VENDOREXPERIMENT=1 $(GOPATH)/bin/govendor remove $(PKG)
+	@echo "Remove new package $(PKG)"
+	@${GOPATH}/bin/govendor remove $(PKG)
 
 pkg-list:
-	@GO15VENDOREXPERIMENT=1 $(GOPATH)/bin/govendor list
+	@$(GOPATH)/bin/govendor list
 
-install: gomake-all
-
-all-tests: test
-	# TODO disable them for now.
-	#@./tests/test-minio.sh
-
-release: verifiers
-	@MC_RELEASE=RELEASE GO15VENDOREXPERIMENT=1 ./buildscripts/build.sh
-
-experimental: verifiers
-	@MC_RELEASE=EXPERIMENTAL GO15VENDOREXPERIMENT=1 ./buildscripts/build.sh
+# Builds minio and installs it to $GOPATH/bin.
+install: build
+	@echo "Installing mc binary to '$(GOPATH)/bin/mc'"
+	@mkdir -p $(GOPATH)/bin && cp $(PWD)/mc $(GOPATH)/bin/mc
+	@echo "Installation successful. To learn more, try \"mc --help\"."
 
 clean:
-	@rm -f cover.out
-	@rm -f mc
+	@echo "Cleaning up all the generated files"
 	@find . -name '*.test' | xargs rm -fv
-	@rm -fr release
+	@rm -rvf mc
+	@rm -rvf build
+	@rm -rvf release

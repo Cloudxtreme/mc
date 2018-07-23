@@ -1,6 +1,11 @@
 cover.out
-mc
 *~
 *.test
 release
 experimental
+coverage.txt
+*.tar.bz2
+parts/
+prime/
+stage/
+mc

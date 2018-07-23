@@ -1,7 +1,7 @@
 // +build ignore
 
 /*
- * Mc Client (C) 2014, 2015 Mc, Inc.
+ * Minio Client (C) 2014, 2015, 2016, 2017, 2018 Minio, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,10 +28,10 @@ import (
 
 func genLDFlags(version string) string {
 	var ldflagsStr string
-	ldflagsStr = "-X main.mcVersion=" + version + " "
-	ldflagsStr = ldflagsStr + "-X main.mcReleaseTag=" + releaseTag(version) + " "
-	ldflagsStr = ldflagsStr + "-X main.mcCommitID=" + commitID() + " "
-	ldflagsStr = ldflagsStr + "-X main.mcShortCommitID=" + commitID()[:12]
+	ldflagsStr = "-s -w -X github.com/minio/mc/cmd.Version=" + version + " "
+	ldflagsStr = ldflagsStr + "-X github.com/minio/mc/cmd.ReleaseTag=" + releaseTag(version) + " "
+	ldflagsStr = ldflagsStr + "-X github.com/minio/mc/cmd.CommitID=" + commitID() + " "
+	ldflagsStr = ldflagsStr + "-X github.com/minio/mc/cmd.ShortCommitID=" + commitID()[:12]
 	return ldflagsStr
 }
 

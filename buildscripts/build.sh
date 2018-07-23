@@ -5,7 +5,7 @@ _init() {
     LDFLAGS=$(go run buildscripts/gen-ldflags.go)
 
     # Extract release tag
-    release_tag=$(echo $LDFLAGS | awk {'print $4'} | cut -f2 -d=)
+    release_tag=$(echo $LDFLAGS | awk {'print $6'} | cut -f2 -d=)
 
     # Verify release tag.
     if [ -z "$release_tag" ]; then
@@ -23,11 +23,12 @@ _init() {
     fi
 
     # List of supported architectures
-    SUPPORTED_OSARCH='linux/386 linux/amd64 linux/arm windows/386 windows/amd64 darwin/amd64 solaris/amd64 freebsd/amd64'
+    SUPPORTED_OSARCH='linux/amd64 linux/ppc64le windows/amd64 darwin/amd64'
 
     ## System binaries
     CP=`which cp`
     SHASUM=`which shasum`
+    SHA256SUM="${SHASUM} -a 256"
     SED=`which sed`
 }
 
@@ -43,11 +44,19 @@ go_build() {
     release_bin="$release_str/$os-$arch/$(basename $package).$release_tag"
     # Release binary downloadable name
     release_real_bin="$release_str/$os-$arch/$(basename $package)"
-    # Release shasum name
-    release_shasum="$release_str/$os-$arch/$(basename $package).shasum"
+
+    # Release sha1sum name
+    release_shasum="$release_str/$os-$arch/$(basename $package).${release_tag}.shasum"
+    # Release sha1sum default
+    release_shasum_default="$release_str/$os-$arch/$(basename $package).shasum"
+
+    # Release sha256sum name
+    release_sha256sum="$release_str/$os-$arch/$(basename $package).${release_tag}.sha256sum"
+    # Release sha256sum default
+    release_sha256sum_default="$release_str/$os-$arch/$(basename $package).sha256sum"
 
     # Go build to build the binary.
-    GOOS=$os GOARCH=$arch go build --ldflags "${LDFLAGS}" -o $release_bin
+    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -tags kqueue --ldflags "${LDFLAGS}" -o $release_bin
 
     # Create copy
     if [ $os == "windows" ]; then
@@ -56,9 +65,15 @@ go_build() {
         $CP -p $release_bin $release_real_bin
     fi
 
-    # Calculate shasum
+    # Calculate sha1sum
     shasum_str=$(${SHASUM} ${release_bin})
     echo ${shasum_str} | $SED "s/$release_str\/$os-$arch\///g" > $release_shasum
+    $CP -p $release_shasum $release_shasum_default
+
+    # Calculate sha256sum
+    sha256sum_str=$(${SHA256SUM} ${release_bin})
+    echo ${sha256sum_str} | $SED "s/$release_str\/$os-$arch\///g" > $release_sha256sum
+    $CP -p $release_sha256sum $release_sha256sum_default
 }
 
 main() {
@@ -70,7 +85,7 @@ main() {
     done
 
     read -p "If you want to build for all, Just press Enter: " chosen_osarch
-    if [ "$chosen_osarch" = "" ]; then
+    if [ "$chosen_osarch" = "" ] || [ "$chosen_osarch" = "all" ]; then
         for each_osarch in ${SUPPORTED_OSARCH}; do
             go_build ${each_osarch}
         done
