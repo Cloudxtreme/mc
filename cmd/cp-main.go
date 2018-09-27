@@ -318,7 +318,7 @@ func doCopySession(session *sessionV8) error {
 	var quitCh = make(chan struct{})
 	var statusCh = make(chan URLs)
 
-	parallel, queueCh := newParallelManager(statusCh, pg)
+	parallel, queueCh := newParallelManager(statusCh)
 
 	go func() {
 		gracefulStop := func() {
@@ -338,9 +338,19 @@ func doCopySession(session *sessionV8) error {
 					gracefulStop()
 					return
 				}
+
+				if e := urlScanner.Err(); e != nil {
+					// Error while reading. quit immediately
+					gracefulStop()
+					return
+				}
+
 				var cpURLs URLs
 				// Unmarshal copyURLs from each line.
-				json.Unmarshal([]byte(urlScanner.Text()), &cpURLs)
+				if e := json.Unmarshal([]byte(urlScanner.Text()), &cpURLs); e != nil {
+					errorIf(probe.NewError(e), "Unable to unmarshal %s", urlScanner.Text())
+					continue
+				}
 
 				// Save total count.
 				cpURLs.TotalCount = session.Header.TotalObjects

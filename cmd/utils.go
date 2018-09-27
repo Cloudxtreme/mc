@@ -50,6 +50,13 @@ func isErrIgnored(err *probe.Error) (ignored bool) {
 	return ignored
 }
 
+const (
+	letterBytes   = "abcdefghijklmnopqrstuvwxyz01234569"
+	letterIdxBits = 6                    // 6 bits to represent a letter index
+	letterIdxMask = 1<<letterIdxBits - 1 // All 1-bits, as many as letterIdxBits
+	letterIdxMax  = 63 / letterIdxBits   // # of letter indices fitting in 63 bits
+)
+
 // UTCNow - returns current UTC time.
 func UTCNow() time.Time {
 	return time.Now().UTC()
@@ -65,6 +72,24 @@ func newRandomID(n int) string {
 		sid[i] = letters[rand.Intn(len(letters))]
 	}
 	return string(sid)
+}
+
+// randString generates random names and prepends them with a known prefix.
+func randString(n int, src rand.Source, prefix string) string {
+	b := make([]byte, n)
+	// A rand.Int63() generates 63 random bits, enough for letterIdxMax letters!
+	for i, cache, remain := n-1, src.Int63(), letterIdxMax; i >= 0; {
+		if remain == 0 {
+			cache, remain = src.Int63(), letterIdxMax
+		}
+		if idx := int(cache & letterIdxMask); idx < len(letterBytes) {
+			b[i] = letterBytes[idx]
+			i--
+		}
+		cache >>= letterIdxBits
+		remain--
+	}
+	return prefix + string(b[0:30-len(prefix)])
 }
 
 // dumpTlsCertificates prints some fields of the certificates received from the server.
@@ -246,4 +271,21 @@ func getSSEKey(resource string, encKeys []prefixSSEPair) string {
 		}
 	}
 	return ""
+}
+
+// Return true if target url is a part of a source url such as:
+// alias/bucket/ and alias/bucket/dir/, however
+func isURLContains(srcURL, tgtURL, sep string) bool {
+	// Add a separator to source url if not found
+	if !strings.HasSuffix(srcURL, sep) {
+		srcURL += sep
+	}
+	if !strings.HasSuffix(tgtURL, sep) {
+		tgtURL += sep
+	}
+	// Check if we are going to copy a directory into itself
+	if strings.HasPrefix(tgtURL, srcURL) {
+		return true
+	}
+	return false
 }

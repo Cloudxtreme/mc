@@ -146,7 +146,8 @@ func newFactory() func(config *Config) (Client, *probe.Error) {
 					Timeout:   30 * time.Second,
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
-				MaxIdleConns:          100,
+				MaxIdleConns:          1024,
+				MaxIdleConnsPerHost:   1024,
 				IdleConnTimeout:       90 * time.Second,
 				TLSHandshakeTimeout:   10 * time.Second,
 				ExpectContinueTimeout: 1 * time.Second,
@@ -799,11 +800,18 @@ func (c *s3Client) MakeBucket(region string, ignoreExisting bool) *probe.Error {
 	if bucket == "" {
 		return probe.NewError(BucketNameEmpty{})
 	}
-
 	if object != "" {
 		if strings.HasSuffix(object, "/") {
-			_, e := c.api.PutObject(bucket, object, bytes.NewReader([]byte("")), 0, minio.PutObjectOptions{})
-			if e != nil {
+		retry:
+			if _, e := c.api.PutObject(bucket, object, bytes.NewReader([]byte("")), 0, minio.PutObjectOptions{}); e != nil {
+				switch minio.ToErrorResponse(e).Code {
+				case "NoSuchBucket":
+					e = c.api.MakeBucket(bucket, region)
+					if e != nil {
+						return probe.NewError(e)
+					}
+					goto retry
+				}
 				return probe.NewError(e)
 			}
 			return nil

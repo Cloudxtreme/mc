@@ -143,8 +143,8 @@ EXAMPLES:
 
   10. Mirror objects older than 30 days from Amazon S3 bucket test to a local folder.
       $ {{.HelpName}} --older-than=30 s3/test ~/test
-	
-  11. Mirror server encrypted objects from Minio cloud storage to a bucket on Amazon S3 cloud storage 
+
+  11. Mirror server encrypted objects from Minio cloud storage to a bucket on Amazon S3 cloud storage
       $ {{.HelpName}} --encrypt-key "minio/photos=32byteslongsecretkeymustbegiven1,s3/archive=32byteslongsecretkeymustbegiven2" minio/photos/ s3/archive/
 
 `,
@@ -173,7 +173,9 @@ type mirrorJob struct {
 	// messages have been written and received
 	wgStatus *sync.WaitGroup
 
-	queueCh chan func() URLs
+	queueCh  chan func() URLs
+	parallel *ParallelManager
+
 	// channel for status messages
 	statusCh chan URLs
 
@@ -227,8 +229,8 @@ func (mj *mirrorJob) doRemove(sURLs URLs) URLs {
 	// Construct proper path with alias.
 	targetWithAlias := filepath.Join(sURLs.TargetAlias, sURLs.TargetContent.URL.Path)
 
-	// Remove extraneous file on target.
-	err := probe.NewError(removeSingle(targetWithAlias, isIncomplete, mj.isFake, 0, 0, sURLs.encKeyDB))
+	// Remove extraneous file/bucket on target.
+	err := probe.NewError(removeRecursive(targetWithAlias, isIncomplete, mj.isFake, 0, 0, sURLs.encKeyDB))
 	return sURLs.WithError(err)
 }
 
@@ -290,6 +292,7 @@ func (mj *mirrorJob) startStatus() {
 				if sURLs.SourceContent != nil {
 					errorIf(sURLs.Error.Trace(sURLs.SourceContent.URL.String()),
 						fmt.Sprintf("Failed to copy `%s`.", sURLs.SourceContent.URL.String()))
+					os.Exit(1)
 				} else {
 					// When sURLs.SourceContent is nil, we know that we have an error related to removing
 					errorIf(sURLs.Error.Trace(sURLs.TargetContent.URL.String()),
@@ -485,10 +488,9 @@ func (mj *mirrorJob) startMirror(ctx context.Context, cancelMirror context.Cance
 	var totalBytes int64
 	var totalObjects int64
 
-	parallel, queueCh := newParallelManager(mj.statusCh, mj.status)
 	stopParallel := func() {
-		close(queueCh)
-		parallel.wait()
+		close(mj.queueCh)
+		mj.parallel.wait()
 	}
 
 	URLsCh := prepareMirrorURLs(mj.sourceURL, mj.targetURL, mj.isFake, mj.isOverwrite, mj.isRemove, mj.excludeOptions, mj.encKeyDB)
@@ -532,11 +534,11 @@ func (mj *mirrorJob) startMirror(ctx context.Context, cancelMirror context.Cance
 			sURLs.TotalSize = mj.TotalBytes
 
 			if sURLs.SourceContent != nil {
-				queueCh <- func() URLs {
+				mj.queueCh <- func() URLs {
 					return mj.doMirror(ctx, cancelMirror, sURLs)
 				}
 			} else if sURLs.TargetContent != nil && mj.isRemove {
-				queueCh <- func() URLs {
+				mj.queueCh <- func() URLs {
 					return mj.doRemove(sURLs)
 				}
 			}
@@ -590,7 +592,7 @@ func (mj *mirrorJob) mirror(ctx context.Context, cancelMirror context.CancelFunc
 				PathInsufficientPermission, ObjectOnGlacier:
 				errorIf(err, "Unable to perform a mirror action.")
 				continue
-			case deleteNotAllowedErr, overwriteNotAllowedErr:
+			case overwriteNotAllowedErr:
 				errorIf(err, "Unable to perform a mirror action.")
 				continue
 			}
@@ -600,15 +602,6 @@ func (mj *mirrorJob) mirror(ctx context.Context, cancelMirror context.CancelFunc
 }
 
 func newMirrorJob(srcURL, dstURL string, isFake, isRemove, isOverwrite, isWatch bool, excludeOptions []string, olderThan, newerThan int, storageClass string, encKeyDB map[string][]prefixSSEPair) *mirrorJob {
-	// we'll define the status to use here,
-	// do we want the quiet status? or the progressbar
-	var status = NewProgressStatus()
-	if globalQuiet {
-		status = NewQuietStatus()
-	} else if globalJSON {
-		status = NewDummyStatus()
-	}
-
 	mj := mirrorJob{
 		trapCh: signalTrap(os.Interrupt, syscall.SIGTERM, syscall.SIGKILL),
 		m:      new(sync.Mutex),
@@ -625,12 +618,22 @@ func newMirrorJob(srcURL, dstURL string, isFake, isRemove, isOverwrite, isWatch 
 		newerThan:      newerThan,
 		storageClass:   storageClass,
 		encKeyDB:       encKeyDB,
-		status:         status,
 		statusCh:       make(chan URLs),
-		queueCh:        make(chan func() URLs),
 		wgStatus:       new(sync.WaitGroup),
 		watcher:        NewWatcher(UTCNow()),
 	}
+
+	mj.parallel, mj.queueCh = newParallelManager(mj.statusCh)
+
+	// we'll define the status to use here,
+	// do we want the quiet status? or the progressbar
+	var status = NewProgressStatus(mj.parallel)
+	if globalQuiet {
+		status = NewQuietStatus(mj.parallel)
+	} else if globalJSON {
+		status = NewDummyStatus(mj.parallel)
+	}
+	mj.status = status
 
 	return &mj
 }

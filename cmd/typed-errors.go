@@ -96,18 +96,13 @@ var errInvalidTarget = func(URL string) *probe.Error {
 	return probe.NewError(invalidTargetErr(errors.New(msg))).Untrace()
 }
 
-type overwriteNotAllowedErr error
+type overwriteNotAllowedErr struct {
+	error
+}
 
 var errOverWriteNotAllowed = func(URL string) *probe.Error {
 	msg := "Overwrite not allowed for `" + URL + "`. Use `--overwrite` to override this behavior."
-	return probe.NewError(overwriteNotAllowedErr(errors.New(msg)))
-}
-
-type deleteNotAllowedErr error
-
-var errDeleteNotAllowed = func(URL string) *probe.Error {
-	msg := "Delete not allowed for `" + URL + "`. Use `--remove` to override this behavior."
-	return probe.NewError(deleteNotAllowedErr(errors.New(msg)))
+	return probe.NewError(overwriteNotAllowedErr{errors.New(msg)})
 }
 
 type sourceIsDirErr error
@@ -122,11 +117,4 @@ type sourceTargetSameErr error
 var errSourceTargetSame = func(URL string) *probe.Error {
 	msg := "Source and target URL can not be same : " + URL
 	return probe.NewError(sourceTargetSameErr(errors.New(msg))).Untrace()
-}
-
-type bucketNotSpecifiedErr error
-
-var errBucketNotSpecified = func() *probe.Error {
-	msg := "This operation requires a " + "bucket to be specified."
-	return probe.NewError(bucketNotSpecifiedErr(errors.New(msg))).Untrace()
 }
