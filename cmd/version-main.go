@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2014, 2015, 2016, 2017 Minio, Inc.
+ * MinIO Client (C) 2014, 2015, 2016, 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,11 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/fatih/color"
 	"github.com/minio/cli"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 )
@@ -29,17 +29,17 @@ import (
 // Print version.
 var versionCmd = cli.Command{
 	Name:   "version",
-	Usage:  "Print version info.",
+	Usage:  "show version info",
 	Action: mainVersion,
 	Before: setGlobalsFromContext,
 	Flags: []cli.Flag{
 		cli.BoolFlag{
 			Name:  "quiet, q",
-			Usage: "Suppress chatty console output.",
+			Usage: "suppress chatty console output",
 		},
 		cli.BoolFlag{
 			Name:  "json",
-			Usage: "Enable JSON formatted output.",
+			Usage: "enable JSON formatted output",
 		},
 	},
 	CustomHelpTemplate: `NAME:
@@ -52,7 +52,7 @@ FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}{{end}}
 EXAMPLES:
-   1. Prints the minio client version:
+   1. Prints the MinIO Client version:
        $ {{.HelpName}}
 `,
 }
@@ -78,7 +78,7 @@ func (v versionMessage) String() string {
 // JSON'ified message for scripting.
 func (v versionMessage) JSON() string {
 	v.Status = "success"
-	msgBytes, e := json.Marshal(v)
+	msgBytes, e := json.MarshalIndent(v, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 	return string(msgBytes)
 }

@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2015, 2016 Minio, Inc.
+ * MinIO Client (C) 2015, 2016 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import "strings"
 var validAPIs = []string{"S3v4", "S3v2"}
 
 const (
-	accessKeyMinLen = 5
+	accessKeyMinLen = 3
 	secretKeyMinLen = 8
 )
 
@@ -39,6 +39,12 @@ func isValidSecretKey(secretKey string) bool {
 		return true
 	}
 	return len(secretKey) >= secretKeyMinLen
+}
+
+// trimTrailingSeparator - Remove trailing separator.
+func trimTrailingSeparator(hostURL string) string {
+	separator := string(newClientURL(hostURL).Separator)
+	return strings.TrimSuffix(hostURL, separator)
 }
 
 // isValidHostURL - validate input host url.

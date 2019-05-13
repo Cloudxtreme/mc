@@ -1,5 +1,5 @@
 /*
- * Minio Client, (C) 2015, 2016 Minio, Inc.
+ * MinIO Client, (C) 2015, 2016 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 	"github.com/minio/minio/pkg/quick"
@@ -50,6 +50,7 @@ type sessionV8Header struct {
 	LastRemoved        string            `json:"lastRemoved"`
 	TotalBytes         int64             `json:"totalBytes"`
 	TotalObjects       int64             `json:"totalObjects"`
+	UserMetaData       map[string]string `json:"metaData"`
 }
 
 // sessionMessage container for session messages
@@ -98,7 +99,7 @@ func (s sessionV8) JSON() string {
 		CommandArgs: s.Header.CommandArgs,
 	}
 	sessionMsg.Status = "success"
-	sessionBytes, e := json.Marshal(sessionMsg)
+	sessionBytes, e := json.MarshalIndent(sessionMsg, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 
 	return string(sessionBytes)
@@ -174,6 +175,7 @@ func newSessionV8() *sessionV8 {
 	s.Header.CommandBoolFlags = make(map[string]bool)
 	s.Header.CommandIntFlags = make(map[string]int)
 	s.Header.CommandStringFlags = make(map[string]string)
+	s.Header.UserMetaData = make(map[string]string)
 	s.Header.When = UTCNow()
 	s.mutex = new(sync.Mutex)
 	s.SessionID = newRandomID(8)

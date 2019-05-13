@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2014, 2015, 2018 Minio, Inc.
+ * MinIO Client (C) 2014, 2015, 2018 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -62,7 +62,7 @@ var errInvalidAlias = func(alias string) *probe.Error {
 type invalidURLErr error
 
 var errInvalidURL = func(URL string) *probe.Error {
-	msg := "URL `" + URL + "` for minio client should be of the form scheme://host[:port]/ without resource component."
+	msg := "URL `" + URL + "` for MinIO Client should be of the form scheme://host[:port]/ without resource component."
 	return probe.NewError(invalidURLErr(errors.New(msg)))
 }
 
@@ -96,6 +96,13 @@ var errInvalidTarget = func(URL string) *probe.Error {
 	return probe.NewError(invalidTargetErr(errors.New(msg))).Untrace()
 }
 
+type targetNotFoundErr error
+
+var errTargetNotFound = func(URL string) *probe.Error {
+	msg := "Target `" + URL + "` not found."
+	return probe.NewError(targetNotFoundErr(errors.New(msg))).Untrace()
+}
+
 type overwriteNotAllowedErr struct {
 	error
 }
@@ -112,9 +119,9 @@ var errSourceIsDir = func(URL string) *probe.Error {
 	return probe.NewError(sourceIsDirErr(errors.New(msg))).Untrace()
 }
 
-type sourceTargetSameErr error
+type conflictSSEErr error
 
-var errSourceTargetSame = func(URL string) *probe.Error {
-	msg := "Source and target URL can not be same : " + URL
-	return probe.NewError(sourceTargetSameErr(errors.New(msg))).Untrace()
+var errConflictSSE = func(sseServer, sseKeys string) *probe.Error {
+	err := fmt.Errorf("SSE alias '%s' overlaps with SSE-C aliases '%s'", sseServer, sseKeys)
+	return probe.NewError(conflictSSEErr(err)).Untrace()
 }

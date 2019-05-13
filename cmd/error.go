@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2014, 2015 Minio, Inc.
+ * MinIO Client (C) 2014, 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,12 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
+	"strings"
+	"unicode"
 
 	"github.com/minio/cli"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 )
@@ -45,6 +47,10 @@ func fatalIf(err *probe.Error, msg string, data ...interface{}) {
 	if err == nil {
 		return
 	}
+	fatal(err, msg, data...)
+}
+
+func fatal(err *probe.Error, msg string, data ...interface{}) {
 	if globalJSON {
 		errorMsg := errorMessage{
 			Message: msg,
@@ -58,24 +64,48 @@ func fatalIf(err *probe.Error, msg string, data ...interface{}) {
 		if globalDebug {
 			errorMsg.CallTrace = err.CallTrace
 		}
-		json, e := json.Marshal(struct {
+		json, e := json.MarshalIndent(struct {
 			Status string       `json:"status"`
 			Error  errorMessage `json:"error"`
 		}{
 			Status: "error",
 			Error:  errorMsg,
-		})
+		}, "", " ")
 		if e != nil {
 			console.Fatalln(probe.NewError(e))
 		}
 		console.Println(string(json))
 		console.Fatalln()
 	}
+
 	msg = fmt.Sprintf(msg, data...)
+	errmsg := err.String()
 	if !globalDebug {
-		console.Fatalln(fmt.Sprintf("%s %s", msg, err.ToGoError()))
+		errmsg = err.ToGoError().Error()
 	}
-	console.Fatalln(fmt.Sprintf("%s %s", msg, err))
+
+	// Remove unnecessary leading spaces in generic/detailed error messages
+	msg = strings.TrimSpace(msg)
+	errmsg = strings.TrimSpace(errmsg)
+
+	// Add punctuations when needed
+	if len(errmsg) > 0 && len(msg) > 0 {
+		if msg[len(msg)-1] != ':' && msg[len(msg)-1] != '.' {
+			// The detailed error message starts with a capital letter,
+			// we should then add '.', otherwise add ':'.
+			if unicode.IsUpper(rune(errmsg[0])) {
+				msg += "."
+			} else {
+				msg += ":"
+			}
+		}
+		// Add '.' to the detail error if not found
+		if errmsg[len(errmsg)-1] != '.' {
+			errmsg += "."
+		}
+	}
+
+	console.Fatalln(fmt.Sprintf("%s %s", msg, errmsg))
 }
 
 // Exit coder wraps cli new exit error with a
@@ -105,13 +135,13 @@ func errorIf(err *probe.Error, msg string, data ...interface{}) {
 		if globalDebug {
 			errorMsg.CallTrace = err.CallTrace
 		}
-		json, e := json.Marshal(struct {
+		json, e := json.MarshalIndent(struct {
 			Status string       `json:"status"`
 			Error  errorMessage `json:"error"`
 		}{
 			Status: "error",
 			Error:  errorMsg,
-		})
+		}, "", " ")
 		if e != nil {
 			console.Fatalln(probe.NewError(e))
 		}

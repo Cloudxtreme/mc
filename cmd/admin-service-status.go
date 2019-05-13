@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2016, 2017 Minio, Inc.
+ * MinIO Client (C) 2016, 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,13 +17,13 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"time"
 
 	"github.com/fatih/color"
 	"github.com/minio/cli"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 )
@@ -34,7 +34,7 @@ var (
 
 var adminServiceStatusCmd = cli.Command{
 	Name:   "status",
-	Usage:  "Get the status of Minio server",
+	Usage:  "get the status of MinIO server",
 	Action: mainAdminServiceStatus,
 	Before: setGlobalsFromContext,
 	Flags:  append(adminServiceStatusFlags, globalFlags...),
@@ -48,7 +48,7 @@ FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}
 EXAMPLES:
-    1. Check if the 'play' Minio server is online and show its uptime.
+    1. Check if the 'play' MinIO server is online and show its uptime.
        $ {{.HelpName}} play/
 `,
 }
@@ -83,7 +83,7 @@ func (u serviceStatusMessage) JSON() string {
 		u.Status = "failure"
 	}
 
-	statusJSONBytes, e := json.Marshal(u)
+	statusJSONBytes, e := json.MarshalIndent(u, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 
 	return string(statusJSONBytes)
@@ -107,11 +107,11 @@ func mainAdminServiceStatus(ctx *cli.Context) error {
 	args := ctx.Args()
 	aliasedURL := args.Get(0)
 
-	// Create a new Minio Admin Client
+	// Create a new MinIO Admin Client
 	client, err := newAdminClient(aliasedURL)
 	fatalIf(err, "Cannot get a configured admin connection.")
 
-	// Fetch the service status of the specified Minio server
+	// Fetch the service status of the specified MinIO server
 	st, e := client.ServiceStatus()
 
 	// Check the availability of the server: online or offline. A server is considered

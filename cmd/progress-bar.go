@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2014, 2015 Minio, Inc.
+ * MinIO Client (C) 2014, 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@
 package cmd
 
 import (
-	"io"
 	"runtime"
 	"strings"
 	"time"
@@ -31,10 +30,6 @@ import (
 // progress extender.
 type progressBar struct {
 	*pb.ProgressBar
-	reader       io.Reader
-	readerLength int64
-	bytesRead    int64
-	isResume     bool
 }
 
 // newProgressBar - instantiate a progress bar.
@@ -99,6 +94,19 @@ func (p *progressBar) SetCaption(caption string) *progressBar {
 func (p *progressBar) Set64(length int64) *progressBar {
 	p.ProgressBar = p.ProgressBar.Set64(length)
 	return p
+}
+
+func (p *progressBar) Read(buf []byte) (n int, err error) {
+	defer func() {
+		// After updating the internal progress bar, make sure that its
+		// current progress doesn't exceed the specified total progress
+		currentProgress := p.ProgressBar.Get()
+		if currentProgress > p.ProgressBar.Total {
+			p.ProgressBar.Set64(p.ProgressBar.Total)
+		}
+	}()
+
+	return p.ProgressBar.Read(buf)
 }
 
 func (p *progressBar) SetTotal(total int64) *progressBar {

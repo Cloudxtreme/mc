@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2016 Minio, Inc.
+ * MinIO Client (C) 2016 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,11 @@
 package cmd
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/fatih/color"
 	"github.com/minio/cli"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 	"github.com/minio/minio/pkg/madmin"
@@ -29,7 +29,7 @@ import (
 
 var adminServiceRestartCmd = cli.Command{
 	Name:   "restart",
-	Usage:  "Restart Minio server",
+	Usage:  "restart MinIO server",
 	Action: mainAdminServiceRestart,
 	Before: setGlobalsFromContext,
 	Flags:  globalFlags,
@@ -43,7 +43,7 @@ FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}
 EXAMPLES:
-    1. Restart Minio server represented by its alias 'play'.
+    1. Restart MinIO server represented by its alias 'play'.
        $ {{.HelpName}} play/
 
 `,
@@ -62,7 +62,7 @@ func (s serviceRestartCommand) String() string {
 
 // JSON jsonified service restart command message.
 func (s serviceRestartCommand) JSON() string {
-	serviceRestartJSONBytes, e := json.Marshal(s)
+	serviceRestartJSONBytes, e := json.MarshalIndent(s, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 
 	return string(serviceRestartJSONBytes)
@@ -85,7 +85,7 @@ func (s serviceRestartMessage) String() string {
 
 // JSON jsonified service restart message.
 func (s serviceRestartMessage) JSON() string {
-	serviceRestartJSONBytes, e := json.Marshal(s)
+	serviceRestartJSONBytes, e := json.MarshalIndent(s, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 
 	return string(serviceRestartJSONBytes)
@@ -114,7 +114,7 @@ func mainAdminServiceRestart(ctx *cli.Context) error {
 	client, err := newAdminClient(aliasedURL)
 	fatalIf(err, "Cannot get a configured admin connection.")
 
-	// Restart the specified Minio server
+	// Restart the specified MinIO server
 	fatalIf(probe.NewError(client.ServiceSendAction(
 		madmin.ServiceActionValueRestart)), "Cannot restart server.")
 
@@ -127,7 +127,7 @@ func mainAdminServiceRestart(ctx *cli.Context) error {
 	// Sleep for 6 seconds and then check if the server is online.
 	time.Sleep(6 * time.Second)
 
-	// Fetch the service status of the specified Minio server
+	// Fetch the service status of the specified MinIO server
 	_, e := client.ServiceStatus()
 
 	if e != nil {

@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2014, 2015 Minio, Inc.
+ * MinIO Client (C) 2014, 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ package cmd
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +26,7 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/minio/cli"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 )
@@ -40,12 +40,12 @@ const (
 var (
 	shareFlagContentType = cli.StringFlag{
 		Name:  "content-type, T",
-		Usage: "Speific content-type to allow.",
+		Usage: "specify a content-type to allow",
 	}
 	shareFlagExpire = cli.StringFlag{
 		Name:  "expire, E",
 		Value: "168h",
-		Usage: "Set expiry in NN[h|m|s].",
+		Usage: "set expiry in NN[h|m|s]",
 	}
 )
 
@@ -79,7 +79,7 @@ func (s shareMesssage) String() string {
 // JSON - JSONified message for scripting.
 func (s shareMesssage) JSON() string {
 	s.Status = "success"
-	shareMessageBytes, e := json.Marshal(s)
+	shareMessageBytes, e := json.MarshalIndent(s, "", " ")
 	fatalIf(probe.NewError(e), "Failed to marshal into JSON.")
 
 	// JSON encoding escapes ampersand into its unicode character

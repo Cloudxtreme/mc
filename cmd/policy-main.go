@@ -1,5 +1,5 @@
 /*
- * Minio Client, (C) 2015, 2016 Minio, Inc.
+ * MinIO Client, (C) 2015, 2016 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,12 +17,16 @@
 package cmd
 
 import (
-	"encoding/json"
+	"bytes"
+	"io"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/fatih/color"
 	"github.com/minio/cli"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 )
@@ -31,15 +35,15 @@ var (
 	policyFlags = []cli.Flag{
 		cli.BoolFlag{
 			Name:  "recursive, r",
-			Usage: "List recursively.",
+			Usage: "list recursively",
 		},
 	}
 )
 
-// Set public policy
+// Manage anonymous access to buckets and objects.
 var policyCmd = cli.Command{
 	Name:   "policy",
-	Usage:  "Manage anonymous access to objects.",
+	Usage:  "manage anonymous access to buckets and objects",
 	Action: mainPolicy,
 	Before: setGlobalsFromContext,
 	Flags:  append(policyFlags, globalFlags...),
@@ -48,12 +52,16 @@ var policyCmd = cli.Command{
 
 USAGE:
   {{.HelpName}} [FLAGS] PERMISSION TARGET
+  {{.HelpName}} [FLAGS] FILE TARGET
   {{.HelpName}} [FLAGS] TARGET
   {{.HelpName}} list [FLAGS] TARGET
 
 PERMISSION:
   Allowed policies are: [none, download, upload, public].
 {{if .VisibleFlags}}
+FILE:
+  A valid S3 policy JSON filepath.
+
 FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}{{end}}
@@ -70,13 +78,16 @@ EXAMPLES:
    4. Set a prefix to "public" on Amazon S3 cloud storage.
       $ {{.HelpName}} public s3/public-commons/images
 
-   5. Get bucket permissions.
+   5. Set a prefix to the policy file path on Amazon S3 cloud storage.
+      $ {{.HelpName}} /path/to/policy.json s3/public-commons/images
+
+   6. Get bucket permissions.
       $ {{.HelpName}} s3/shared
 
-   6. List policies set to a specified bucket.
+   7. List policies set to a specified bucket.
       $ {{.HelpName}} list s3/shared
 
-   7. List public object URLs recursively.
+   8. List public object URLs recursively.
       $ {{.HelpName}} --recursive links s3/shared/
 
 `,
@@ -95,17 +106,18 @@ func (s policyRules) String() string {
 
 // JSON jsonified policy message.
 func (s policyRules) JSON() string {
-	policyJSONBytes, e := json.Marshal(s)
+	policyJSONBytes, e := json.MarshalIndent(s, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 	return string(policyJSONBytes)
 }
 
 // policyMessage is container for policy command on bucket success and failure messages.
 type policyMessage struct {
-	Operation string      `json:"operation"`
-	Status    string      `json:"status"`
-	Bucket    string      `json:"bucket"`
-	Perms     accessPerms `json:"permission"`
+	Operation string                 `json:"operation"`
+	Status    string                 `json:"status"`
+	Bucket    string                 `json:"bucket"`
+	Perms     accessPerms            `json:"permission"`
+	Policy    map[string]interface{} `json:"policy,omitempty"`
 }
 
 // String colorized access message.
@@ -118,13 +130,17 @@ func (s policyMessage) String() string {
 		return console.Colorize("Policy",
 			"Access permission for `"+s.Bucket+"`"+" is `"+string(s.Perms)+"`")
 	}
+	if s.Operation == "setJSON" {
+		return console.Colorize("Policy",
+			"Access permission for `"+s.Bucket+"`"+" is set from `"+string(s.Perms)+"`")
+	}
 	// nothing to print
 	return ""
 }
 
 // JSON jsonified policy message.
 func (s policyMessage) JSON() string {
-	policyJSONBytes, e := json.Marshal(s)
+	policyJSONBytes, e := json.MarshalIndent(s, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 
 	return string(policyJSONBytes)
@@ -143,7 +159,7 @@ func (s policyLinksMessage) String() string {
 
 // JSON jsonified policy message.
 func (s policyLinksMessage) JSON() string {
-	policyJSONBytes, e := json.Marshal(s)
+	policyJSONBytes, e := json.MarshalIndent(s, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 
 	return string(policyJSONBytes)
@@ -182,7 +198,7 @@ func checkPolicySyntax(ctx *cli.Context) {
 		}
 
 	default:
-		if argsLength == 2 {
+		if argsLength == 2 && filepath.Ext(string(firstArg)) != ".json" {
 			fatalIf(errDummy().Trace(),
 				"Unrecognized permission `"+string(firstArg)+"`. Allowed values are [none, download, upload, public].")
 		}
@@ -201,6 +217,8 @@ func accessPermToString(perm accessPerms) string {
 		policy = "writeonly"
 	case accessPublic:
 		policy = "readwrite"
+	case accessCustom:
+		policy = "custom"
 	}
 	return policy
 }
@@ -212,7 +230,37 @@ func doSetAccess(targetURL string, targetPERMS accessPerms) *probe.Error {
 		return err.Trace(targetURL)
 	}
 	policy := accessPermToString(targetPERMS)
-	if err = clnt.SetAccess(policy); err != nil {
+	if err = clnt.SetAccess(policy, false); err != nil {
+		return err.Trace(targetURL, string(targetPERMS))
+	}
+	return nil
+}
+
+// doSetAccessJSON do set access JSON.
+func doSetAccessJSON(targetURL string, targetPERMS accessPerms) *probe.Error {
+	clnt, err := newClient(targetURL)
+	if err != nil {
+		return err.Trace(targetURL)
+	}
+	fileReader, e := os.Open(string(targetPERMS))
+	if e != nil {
+		fatalIf(probe.NewError(e).Trace(), "Unable to set policy for `"+targetURL+"`.")
+	}
+	defer fileReader.Close()
+
+	const maxJSONSize = 120 * 1024 // 120KiB
+	configBuf := make([]byte, maxJSONSize+1)
+
+	n, e := io.ReadFull(fileReader, configBuf)
+	if e == nil {
+		return probe.NewError(bytes.ErrTooLarge).Trace(targetURL)
+	}
+	if e != io.ErrUnexpectedEOF {
+		return probe.NewError(e).Trace(targetURL)
+	}
+
+	configBytes := configBuf[:n]
+	if err = clnt.SetAccess(string(configBytes), true); err != nil {
 		return err.Trace(targetURL, string(targetPERMS))
 	}
 	return nil
@@ -230,21 +278,23 @@ func stringToAccessPerm(perm string) accessPerms {
 		policy = accessUpload
 	case "readwrite":
 		policy = accessPublic
+	case "custom":
+		policy = accessCustom
 	}
 	return policy
 }
 
 // doGetAccess do get access.
-func doGetAccess(targetURL string) (perms accessPerms, err *probe.Error) {
+func doGetAccess(targetURL string) (perms accessPerms, policyStr string, err *probe.Error) {
 	clnt, err := newClient(targetURL)
 	if err != nil {
-		return "", err.Trace(targetURL)
+		return "", "", err.Trace(targetURL)
 	}
-	perm, err := clnt.GetAccess()
+	perm, policyJSON, err := clnt.GetAccess()
 	if err != nil {
-		return "", err.Trace(targetURL)
+		return "", "", err.Trace(targetURL)
 	}
-	return stringToAccessPerm(perm), nil
+	return stringToAccessPerm(perm), policyJSON, nil
 }
 
 // doGetAccessRules do get access rules.
@@ -257,8 +307,8 @@ func doGetAccessRules(targetURL string) (r map[string]string, err *probe.Error) 
 }
 
 // Run policy list command
-func runPolicyListCmd(ctx *cli.Context) {
-	targetURL := ctx.Args().Last()
+func runPolicyListCmd(args cli.Args) {
+	targetURL := args.First()
 	policies, err := doGetAccessRules(targetURL)
 	if err != nil {
 		switch err.ToGoError().(type) {
@@ -274,9 +324,9 @@ func runPolicyListCmd(ctx *cli.Context) {
 }
 
 // Run policy links command
-func runPolicyLinksCmd(ctx *cli.Context) {
+func runPolicyLinksCmd(args cli.Args, recursive bool) {
 	// Get alias/bucket/prefix argument
-	targetURL := ctx.Args().Last()
+	targetURL := args.First()
 
 	// Fetch all policies associated to the passed url
 	policies, err := doGetAccessRules(targetURL)
@@ -293,7 +343,7 @@ func runPolicyLinksCmd(ctx *cli.Context) {
 	// construct new pathes to list public objects
 	alias, path := url2Alias(targetURL)
 
-	isRecursive := ctx.Bool("recursive")
+	isRecursive := recursive
 	isIncomplete := false
 
 	// Iterate over policy rules to fetch public urls, then search
@@ -342,48 +392,45 @@ func runPolicyLinksCmd(ctx *cli.Context) {
 }
 
 // Run policy cmd to fetch set permission
-func runPolicyCmd(ctx *cli.Context) {
-	perms := accessPerms(ctx.Args().First())
+func runPolicyCmd(args cli.Args) {
+	var operation, policyStr string
+	var probeErr *probe.Error
+	perms := accessPerms(args.Get(0))
+	targetURL := args.Get(1)
 	if perms.isValidAccessPERM() {
-		targetURL := ctx.Args().Last()
-		err := doSetAccess(targetURL, perms)
-		// Upon error exit.
-		if err != nil {
-			switch err.ToGoError().(type) {
-			case APINotImplemented:
-				fatalIf(err.Trace(), "Unable to set policy of a non S3 url `"+targetURL+"`.")
-			default:
-				fatalIf(err.Trace(targetURL, string(perms)),
-					"Unable to set policy `"+string(perms)+"` for `"+targetURL+"`.")
-
-			}
-		}
-
-		printMsg(policyMessage{
-			Status:    "success",
-			Operation: "set",
-			Bucket:    targetURL,
-			Perms:     perms,
-		})
+		probeErr = doSetAccess(targetURL, perms)
+		operation = "set"
+	} else if perms.isValidAccessFile() {
+		probeErr = doSetAccessJSON(targetURL, perms)
+		operation = "setJSON"
 	} else {
-		targetURL := ctx.Args().First()
-		perms, err := doGetAccess(targetURL)
-		if err != nil {
-			switch err.ToGoError().(type) {
-			case APINotImplemented:
-				fatalIf(err.Trace(), "Unable to get policy of a non S3 url `"+targetURL+"`.")
-			default:
-				fatalIf(err.Trace(targetURL), "Unable to get policy for `"+targetURL+"`.")
-			}
-		}
-
-		printMsg(policyMessage{
-			Status:    "success",
-			Operation: "get",
-			Bucket:    targetURL,
-			Perms:     perms,
-		})
+		targetURL = args.First()
+		perms, policyStr, probeErr = doGetAccess(targetURL)
+		operation = "get"
 	}
+	// Upon error exit.
+	if probeErr != nil {
+		switch probeErr.ToGoError().(type) {
+		case APINotImplemented:
+			fatalIf(probeErr.Trace(), "Unable to "+operation+" policy of a non S3 url `"+targetURL+"`.")
+		default:
+			fatalIf(probeErr.Trace(targetURL, string(perms)),
+				"Unable to "+operation+" policy `"+string(perms)+"` for `"+targetURL+"`.")
+		}
+	}
+	policyJSON := map[string]interface{}{}
+	if policyStr != "" {
+		e := json.Unmarshal([]byte(policyStr), &policyJSON)
+		fatalIf(probe.NewError(e), "Cannot unmarshal custom policy file.")
+	}
+
+	printMsg(policyMessage{
+		Status:    "success",
+		Operation: operation,
+		Bucket:    targetURL,
+		Perms:     perms,
+		Policy:    policyJSON,
+	})
 }
 
 func mainPolicy(ctx *cli.Context) error {
@@ -397,13 +444,13 @@ func mainPolicy(ctx *cli.Context) error {
 	switch ctx.Args().First() {
 	case "list":
 		// policy list alias/bucket/prefix
-		runPolicyListCmd(ctx)
+		runPolicyListCmd(ctx.Args().Tail())
 	case "links":
 		// policy links alias/bucket/prefix
-		runPolicyLinksCmd(ctx)
+		runPolicyLinksCmd(ctx.Args().Tail(), ctx.Bool("recursive"))
 	default:
 		// policy [download|upload|public|] alias/bucket/prefix
-		runPolicyCmd(ctx)
+		runPolicyCmd(ctx.Args())
 	}
 	return nil
 }

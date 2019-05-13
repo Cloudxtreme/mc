@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2016, 2017 Minio, Inc.
+ * MinIO Client (C) 2016, 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ var (
 
 var adminCmd = cli.Command{
 	Name:            "admin",
-	Usage:           "Manage Minio servers",
+	Usage:           "manage MinIO servers",
 	Action:          mainAdmin,
 	HideHelpCommand: true,
 	Before:          setGlobalsFromContext,
@@ -32,9 +32,13 @@ var adminCmd = cli.Command{
 	Subcommands: []cli.Command{
 		adminServiceCmd,
 		adminInfoCmd,
-		adminCredsCmd,
+		adminUserCmd,
+		adminPolicyCmd,
 		adminConfigCmd,
 		adminHealCmd,
+		adminProfileCmd,
+		adminTopCmd,
+		adminMonitorCmd,
 	},
 }
 
@@ -42,5 +46,5 @@ var adminCmd = cli.Command{
 func mainAdmin(ctx *cli.Context) error {
 	cli.ShowCommandHelp(ctx, ctx.Args().First())
 	return nil
-	// Sub-commands like "service", "heal", "lock" have their own main.
+	// Sub-commands like "service", "heal", "top" have their own main.
 }

@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2017 Minio, Inc.
+ * MinIO Client (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,13 +17,13 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
 
 	humanize "github.com/dustin/go-humanize"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 )
@@ -36,6 +36,7 @@ type statMessage struct {
 	Size              int64             `json:"size"`
 	ETag              string            `json:"etag"`
 	Type              string            `json:"type"`
+	Expires           time.Time         `json:"expires"`
 	EncryptionHeaders map[string]string `json:"encryption,omitempty"`
 	Metadata          map[string]string `json:"metadata"`
 }
@@ -51,7 +52,9 @@ func printStat(stat statMessage) {
 		console.Println(fmt.Sprintf("%-10s: %s ", "ETag", stat.ETag))
 	}
 	console.Println(fmt.Sprintf("%-10s: %s ", "Type", stat.Type))
-
+	if !stat.Expires.IsZero() {
+		console.Println(fmt.Sprintf("%-10s: %s ", "Expires", stat.Expires.Format(printDate)))
+	}
 	var maxKey = 0
 	for k := range stat.Metadata {
 		if len(k) > maxKey {
@@ -82,14 +85,14 @@ func printStat(stat statMessage) {
 // JSON jsonified content message.
 func (c statMessage) JSON() string {
 	c.Status = "success"
-	jsonMessageBytes, e := json.Marshal(c)
+	jsonMessageBytes, e := json.MarshalIndent(c, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 
 	return string(jsonMessageBytes)
 }
 
 // parseStat parses client Content container into statMessage struct.
-func parseStat(targetAlias string, c *clientContent) statMessage {
+func parseStat(c *clientContent) statMessage {
 	content := statMessage{}
 	content.Date = c.Time.Local()
 	// guess file type.
@@ -104,13 +107,21 @@ func parseStat(targetAlias string, c *clientContent) statMessage {
 	content.Metadata = c.Metadata
 	content.ETag = strings.TrimPrefix(c.ETag, "\"")
 	content.ETag = strings.TrimSuffix(content.ETag, "\"")
-
+	content.Expires = c.Expires
 	content.EncryptionHeaders = c.EncryptionHeaders
 	return content
 }
 
-// doStat - list all entities inside a folder.
-func doStat(clnt Client, isRecursive bool, targetAlias, targetURL string, encKeyDB map[string][]prefixSSEPair) error {
+// statURL - simple or recursive listing
+func statURL(targetURL string, isIncomplete, isRecursive bool, encKeyDB map[string][]prefixSSEPair) ([]*clientContent, *probe.Error) {
+	var stats []*clientContent
+	var clnt Client
+	clnt, err := newClient(targetURL)
+	if err != nil {
+		return nil, err
+	}
+
+	targetAlias, _, _ := mustExpandAlias(targetURL)
 
 	prefixPath := clnt.GetURL().Path
 	separator := string(clnt.GetURL().Separator)
@@ -118,7 +129,6 @@ func doStat(clnt Client, isRecursive bool, targetAlias, targetURL string, encKey
 		prefixPath = prefixPath[:strings.LastIndex(prefixPath, separator)+1]
 	}
 	var cErr error
-	isIncomplete := false
 	for content := range clnt.List(isRecursive, isIncomplete, DirNone) {
 		if content.Err != nil {
 			switch content.Err.ToGoError().(type) {
@@ -144,6 +154,11 @@ func doStat(clnt Client, isRecursive bool, targetAlias, targetURL string, encKey
 			continue
 		}
 		url := targetAlias + getKey(content)
+
+		if !isRecursive && !strings.HasPrefix(url, targetURL) {
+			return nil, errTargetNotFound(targetURL)
+		}
+
 		_, stat, err := url2Stat(url, true, encKeyDB)
 		if err != nil {
 			stat = content
@@ -154,12 +169,8 @@ func doStat(clnt Client, isRecursive bool, targetAlias, targetURL string, encKey
 		// Trim prefix path from the content path.
 		contentURL = strings.TrimPrefix(contentURL, prefixPath)
 		stat.URL.Path = contentURL
-		st := parseStat(targetAlias, stat)
-		if !globalJSON {
-			printStat(st)
-		} else {
-			console.Println(st.JSON())
-		}
+		stats = append(stats, stat)
 	}
-	return cErr
+
+	return stats, probe.NewError(cErr)
 }

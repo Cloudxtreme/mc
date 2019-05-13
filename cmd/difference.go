@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2015 Minio, Inc.
+ * MinIO Client (C) 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,9 +32,9 @@ const (
 	differInNone   differType = iota // does not differ
 	differInSize                     // differs in size
 	differInTime                     // differs in time
-	differInType                     // only in source
-	differInFirst                    // only in target
-	differInSecond                   // differs in type, exfile/directory
+	differInType                     // differs in type, exfile/directory
+	differInFirst                    // only in source (FIRST)
+	differInSecond                   // only in target (SECOND)
 )
 
 func (d differType) String() string {

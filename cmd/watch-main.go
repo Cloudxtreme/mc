@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2016 Minio, Inc.
+ * MinIO Client (C) 2016 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -27,6 +26,7 @@ import (
 	humanize "github.com/dustin/go-humanize"
 	"github.com/fatih/color"
 	"github.com/minio/cli"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 )
@@ -36,26 +36,26 @@ var (
 		cli.StringFlag{
 			Name:  "events",
 			Value: "put,delete,get",
-			Usage: "Filter specific types of events. Defaults to all events by default.",
+			Usage: "filter specific types of events; defaults to all events by default",
 		},
 		cli.StringFlag{
 			Name:  "prefix",
-			Usage: "Filter events for a prefix.",
+			Usage: "filter events for a prefix",
 		},
 		cli.StringFlag{
 			Name:  "suffix",
-			Usage: "Filter events for a suffix.",
+			Usage: "filter events for a suffix",
 		},
 		cli.BoolFlag{
 			Name:  "recursive",
-			Usage: "Recursively watch for events.",
+			Usage: "recursively watch for events",
 		},
 	}
 )
 
 var watchCmd = cli.Command{
 	Name:   "watch",
-	Usage:  "Watch for file and object events.",
+	Usage:  "listen for object notification events",
 	Action: mainWatch,
 	Before: setGlobalsFromContext,
 	Flags:  append(watchFlags, globalFlags...),
@@ -69,16 +69,16 @@ FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}{{end}}
 EXAMPLES:
-   1. Watch new S3 operations on a minio server
+   1. Watch new S3 operations on a MinIO server
       $ {{.HelpName}} play/testbucket
 
-   2. Watch new events for a specific prefix "output/"  on minio server.
+   2. Watch new events for a specific prefix "output/"  on MinIO server.
       $ {{.HelpName}} --prefix "output/" play/testbucket
 
-   3. Watch new events for a specific suffix ".jpg" on minio server.
+   3. Watch new events for a specific suffix ".jpg" on MinIO server.
       $ {{.HelpName}} --suffix ".jpg" play/testbucket
 
-   4. Watch new events on a specific prefix and suffix on minio server.
+   4. Watch new events on a specific prefix and suffix on MinIO server.
       $ {{.HelpName}} --suffix ".jpg" --prefix "photos/" play/testbucket
 
    5. Watch for events on local directory.
@@ -111,7 +111,7 @@ type watchMessage struct {
 
 func (u watchMessage) JSON() string {
 	u.Status = "success"
-	watchMessageJSONBytes, e := json.Marshal(u)
+	watchMessageJSONBytes, e := json.MarshalIndent(u, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 	return string(watchMessageJSONBytes)
 }

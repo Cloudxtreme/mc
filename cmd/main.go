@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2014, 2015, 2016, 2017 Minio, Inc.
+ * MinIO Client (C) 2014, 2015, 2016, 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,6 +33,8 @@ import (
 	"github.com/minio/mc/pkg/probe"
 	"github.com/minio/minio/pkg/words"
 	"github.com/pkg/profile"
+
+	completeinstall "github.com/posener/complete/cmd/install"
 )
 
 var (
@@ -54,7 +56,7 @@ GLOBAL FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}{{end}}
 VERSION:
-  ` + Version +
+  ` + ReleaseTag +
 	`{{ "\n"}}{{range $key, $value := ExtraInfo}}
 {{$key}}:
   {{$value}}
@@ -62,6 +64,14 @@ VERSION:
 
 // Main starts mc application
 func Main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "mc", "-install", "-uninstall":
+			mainComplete()
+			return
+		}
+	}
+
 	// Enable profiling supported modes are [cpu, mem, block].
 	// ``MC_PROFILER`` supported options are [cpu, mem, block].
 	switch os.Getenv("MC_PROFILER") {
@@ -186,36 +196,40 @@ func initMC() {
 		}
 	}
 
-	// Check if mc session folder exists.
+	// Install mc completion, ignore any error for now
+	_ = completeinstall.Install("mc")
+
+	// Check if mc session directory exists.
 	if !isSessionDirExists() {
-		fatalIf(createSessionDir().Trace(), "Unable to create session config folder.")
+		fatalIf(createSessionDir().Trace(), "Unable to create session config directory.")
 	}
 
-	// Check if mc share folder exists.
+	// Check if mc share directory exists.
 	if !isShareDirExists() {
 		initShareConfig()
 	}
 
 	// Check if certs dir exists
 	if !isCertsDirExists() {
-		fatalIf(createCertsDir().Trace(), "Unable to create `CAs` folder.")
+		fatalIf(createCertsDir().Trace(), "Unable to create `CAs` directory.")
 	}
 
 	// Check if CAs dir exists
 	if !isCAsDirExists() {
-		fatalIf(createCAsDir().Trace(), "Unable to create `CAs` folder.")
+		fatalIf(createCAsDir().Trace(), "Unable to create `CAs` directory.")
 	}
 
 	// Load all authority certificates present in CAs dir
 	loadRootCAs()
+
 }
 
 func registerBefore(ctx *cli.Context) error {
 	// Check if mc was compiled using a supported version of Golang.
 	checkGoVersion()
 
-	// Set the config folder.
-	setMcConfigDir(ctx.GlobalString("config-folder"))
+	// Set the config directory.
+	setMcConfigDir(ctx.GlobalString("config-dir"))
 
 	// Migrate any old version of config / state files to newer format.
 	migrate()
@@ -256,66 +270,76 @@ func findClosestCommands(command string) []string {
 func checkUpdate(ctx *cli.Context) {
 	// Do not print update messages, if quiet flag is set.
 	if ctx.Bool("quiet") || ctx.GlobalBool("quiet") {
-		older, downloadURL, err := getUpdateInfo(1 * time.Second)
-		if err != nil {
-			// Its OK to ignore any errors during getUpdateInfo() here.
-			return
-		}
-		if older > time.Duration(0) {
-			console.Println(colorizeUpdateMessage(downloadURL, older))
+		// Its OK to ignore any errors during doUpdate() here.
+		if updateMsg, _, currentReleaseTime, latestReleaseTime, err := getUpdateInfo(2 * time.Second); err == nil {
+			printMsg(updateMessage{
+				Status:  "success",
+				Message: updateMsg,
+			})
+		} else {
+			printMsg(updateMessage{
+				Status:  "success",
+				Message: prepareUpdateMessage("Run `mc update`", latestReleaseTime.Sub(currentReleaseTime)),
+			})
 		}
 	}
 }
 
+var appCmds = []cli.Command{
+	lsCmd,
+	mbCmd,
+	rbCmd,
+	catCmd,
+	headCmd,
+	pipeCmd,
+	shareCmd,
+	cpCmd,
+	mirrorCmd,
+	findCmd,
+	sqlCmd,
+	statCmd,
+	diffCmd,
+	rmCmd,
+	eventCmd,
+	watchCmd,
+	policyCmd,
+	adminCmd,
+	sessionCmd,
+	configCmd,
+	updateCmd,
+	versionCmd,
+}
+
 func registerApp() *cli.App {
-	// Register all the commands (refer flags.go)
-	registerCmd(lsCmd)      // List contents of a bucket.
-	registerCmd(mbCmd)      // Make a bucket.
-	registerCmd(catCmd)     // Display contents of a file.
-	registerCmd(pipeCmd)    // Write contents of stdin to a file.
-	registerCmd(shareCmd)   // Share documents via URL.
-	registerCmd(cpCmd)      // Copy objects and files from multiple sources to single destination.
-	registerCmd(mirrorCmd)  // Mirror objects and files from single source to multiple destinations.
-	registerCmd(findCmd)    // Find specific String patterns
-	registerCmd(selectCmd)  // Run select queries on a object or set of objects.
-	registerCmd(statCmd)    // Stat contents of a bucket/object
-	registerCmd(diffCmd)    // Computer differences between two files or folders.
-	registerCmd(rmCmd)      // Remove a file or bucket
-	registerCmd(eventsCmd)  // Add events cmd
-	registerCmd(watchCmd)   // Add watch cmd
-	registerCmd(policyCmd)  // Set policy permissions.
-	registerCmd(adminCmd)   // Manage Minio servers
-	registerCmd(sessionCmd) // Manage sessions for copy and mirror.
-	registerCmd(configCmd)  // Configure minio client.
-	registerCmd(updateCmd)  // Check for new software updates.
-	registerCmd(versionCmd) // Print version.
+	for _, cmd := range appCmds {
+		registerCmd(cmd)
+	}
 
 	cli.HelpFlag = cli.BoolFlag{
 		Name:  "help, h",
-		Usage: "Show help.",
+		Usage: "show help",
 	}
 
 	cli.BashCompletionFlag = cli.BoolFlag{
 		Name:   "compgen",
-		Usage:  "Enables bash-completion for all commands and subcommands.",
+		Usage:  "enables bash-completion for all commands and subcommands",
 		Hidden: true,
 	}
 
 	app := cli.NewApp()
 	app.Action = func(ctx *cli.Context) {
-		if strings.HasPrefix(Version, "RELEASE.") {
-			// Check for new updates from dl.minio.io.
+		if strings.HasPrefix(ReleaseTag, "RELEASE.") {
+			// Check for new updates from dl.min.io.
 			checkUpdate(ctx)
 		}
 		cli.ShowAppHelp(ctx)
 	}
 
-	app.HideVersion = true
 	app.HideHelpCommand = true
-	app.Usage = "Minio Client for cloud storage and filesystems."
+	app.Usage = "MinIO Client for cloud storage and filesystems."
 	app.Commands = commands
-	app.Author = "Minio.io"
-	app.Version = Version
+	app.Author = "MinIO, Inc."
+	app.Version = ReleaseTag
 	app.Flags = append(mcFlags, globalFlags...)
 	app.CustomAppHelpTemplate = mcHelpTemplate
 	app.CommandNotFound = commandNotFound // handler function declared above.

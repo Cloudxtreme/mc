@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2017 Minio, Inc.
+ * MinIO Client (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ package cmd
 
 import (
 	"strings"
-	"time"
 
 	humanize "github.com/dustin/go-humanize"
 	"github.com/fatih/color"
@@ -32,58 +31,58 @@ var (
 	findFlags = []cli.Flag{
 		cli.StringFlag{
 			Name:  "exec",
-			Usage: "Spawn an external process for each matching object (see FORMAT)",
+			Usage: "spawn an external process for each matching object (see FORMAT)",
 		},
 		cli.StringFlag{
 			Name:  "ignore",
-			Usage: "Exclude objects matching the wildcard pattern",
+			Usage: "exclude objects matching the wildcard pattern",
 		},
 		cli.StringFlag{
 			Name:  "name",
-			Usage: "Find object names matching wildcard pattern",
+			Usage: "find object names matching wildcard pattern",
 		},
 		cli.StringFlag{
-			Name:  "newer",
-			Usage: "Match all objects newer than specified time in units (see UNITS)",
+			Name:  "newer-than",
+			Usage: "match all objects newer than L days, M hours and N minutes",
 		},
 		cli.StringFlag{
-			Name:  "older",
-			Usage: "Match all objects older than specified time in units (see UNITS)",
+			Name:  "older-than",
+			Usage: "match all objects older than L days, M hours and N minutes",
 		},
 		cli.StringFlag{
 			Name:  "path",
-			Usage: "Match directory names matching wildcard pattern",
+			Usage: "match directory names matching wildcard pattern",
 		},
 		cli.StringFlag{
 			Name:  "print",
-			Usage: "Print in custom format to STDOUT (see FORMAT)",
+			Usage: "print in custom format to STDOUT (see FORMAT)",
 		},
 		cli.StringFlag{
 			Name:  "regex",
-			Usage: "Match directory and object name with PCRE regex pattern",
+			Usage: "match directory and object name with PCRE regex pattern",
 		},
 		cli.StringFlag{
 			Name:  "larger",
-			Usage: "Match all objects larger than specified size in units (see UNITS)",
+			Usage: "match all objects larger than specified size in units (see UNITS)",
 		},
 		cli.StringFlag{
 			Name:  "smaller",
-			Usage: "Match all objects smaller than specified size in units (see UNITS)",
+			Usage: "match all objects smaller than specified size in units (see UNITS)",
 		},
 		cli.UintFlag{
 			Name:  "maxdepth",
-			Usage: "Limit directory navigation to specified depth",
+			Usage: "limit directory navigation to specified depth",
 		},
 		cli.BoolFlag{
 			Name:  "watch",
-			Usage: "Monitor a specified path for newly created files and objects",
+			Usage: "monitor a specified path for newly created object(s)",
 		},
 	}
 )
 
 var findCmd = cli.Command{
 	Name:   "find",
-	Usage:  "Search for files and objects.",
+	Usage:  "search for objects",
 	Action: mainFind,
 	Before: setGlobalsFromContext,
 	Flags:  append(findFlags, globalFlags...),
@@ -103,10 +102,8 @@ UNITS
    units, so that "gi" refers to "gibibyte" or "GiB". A "b" at the end is
    also accepted. Without suffixes the unit is bytes.
 
-   --older, --newer flags accept the suffixes "d", "w", "m" and "y" to refer
-   to units of days, weeks, months and years respectively. With the standard
-   rate of conversion being 7 days in 1 week, 30 days in 1 month, and 365
-   days in one year.
+   --older-than, --newer-than flags accept the string for days, hours and minutes 
+   i.e. 1d2h30m states 1 day, 2 hours and 30 minutes.
 
 FORMAT
    Support string substitutions with special interpretations for following keywords.
@@ -115,8 +112,8 @@ FORMAT
       {}     --> Substitutes to full path.
       {base} --> Substitutes to basename of path.
       {dir}  --> Substitutes to dirname of the path.
-      {size} --> Substitutes to file size of the path.
-      {time} --> Substitutes to file modified time of the path.
+      {size} --> Substitutes to object size of the path.
+      {time} --> Substitutes to object modified time of the path.
 
    Keywords supported if target is object storage:
 
@@ -147,9 +144,9 @@ EXAMPLES:
    08. Find all objects created in the last week under "s3/bucket".
        $ {{.HelpName}} s3/bucket --newer 1w
 
-   09. Find all objects which were created more than 6 months ago, and exclude the ones with ".jpg"
+   09. Find all objects which were created are older than 2 days, 5 hours and 10 minutes and exclude the ones with ".jpg"
        extension under "s3".
-       $ {{.HelpName}} s3 --older 6m --ignore "*.jpg"
+       $ {{.HelpName}} s3 --older-than 2d5h10m --ignore "*.jpg"
 
    10. List all objects up to 3 levels sub-directory deep under "s3/bucket".
        $ {{.HelpName}} s3/bucket --maxdepth 3
@@ -197,8 +194,8 @@ type findContext struct {
 	regexPattern  string
 	maxDepth      uint
 	printFmt      string
-	olderThan     time.Time
-	newerThan     time.Time
+	olderThan     string
+	newerThan     string
 	largerSize    uint64
 	smallerSize   uint64
 	watch         bool
@@ -232,15 +229,13 @@ func mainFind(ctx *cli.Context) error {
 	clnt, err := newClient(args[0])
 	fatalIf(err.Trace(args...), "Unable to initialize `"+args[0]+"`.")
 
-	var olderThan, newerThan time.Time
+	var olderThan, newerThan string
 
-	if ctx.String("older") != "" {
-		olderThan, err = parseTime(ctx.String("older"))
-		fatalIf(err.Trace(ctx.String("older")), "Unable to parse input time.")
+	if ctx.String("older-than") != "" {
+		olderThan = ctx.String("older-than")
 	}
-	if ctx.String("newer") != "" {
-		newerThan, err = parseTime(ctx.String("newer"))
-		fatalIf(err.Trace(ctx.String("newer")), "Unable to parse input time.")
+	if ctx.String("newer-than") != "" {
+		newerThan = ctx.String("newer-than")
 	}
 
 	// Use 'e' to indicate Go error, this is a convention followed in `mc`. For probe.Error we call it

@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2017 Minio, Inc.
+ * MinIO Client (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -209,7 +209,7 @@ func getAliasedPath(ctx *findContext, path string) string {
 	prefixPath := ctx.clnt.GetURL().String()
 	var aliasedPath string
 	if ctx.targetAlias != "" {
-		aliasedPath = ctx.targetAlias + strings.TrimPrefix(path, ctx.targetFullURL)
+		aliasedPath = ctx.targetAlias + strings.TrimPrefix(path, strings.TrimSuffix(ctx.targetFullURL, separator))
 	} else {
 		aliasedPath = path
 		// look for prefix path, if found filter at that, Watch calls
@@ -243,7 +243,7 @@ func find(ctx *findContext, fileContent contentMessage) {
 // all the input parameters.
 func doFind(ctx *findContext) error {
 	// If watch is enabled we will wait on the prefix perpetually
-	// for all I/O events until cancelled by user, if watch is not enabled
+	// for all I/O events until canceled by user, if watch is not enabled
 	// following defer is a no-op.
 	defer watchFind(ctx)
 
@@ -301,7 +301,7 @@ func doFind(ctx *findContext) error {
 	}
 
 	// Success, notice watch will execute in defer only if enabled and this call
-	// will return after watch is cancelled.
+	// will return after watch is canceled.
 	return nil
 }
 
@@ -396,11 +396,11 @@ func matchFind(ctx *findContext, fileContent contentMessage) (match bool) {
 	if match && ctx.regexPattern != "" {
 		match = regexMatch(ctx.regexPattern, path)
 	}
-	if match && !ctx.olderThan.IsZero() {
-		match = fileContent.Time.Before(ctx.olderThan)
+	if match && ctx.olderThan != "" {
+		match = !isOlder(fileContent.Time, ctx.olderThan)
 	}
-	if match && !ctx.newerThan.IsZero() {
-		match = fileContent.Time.After(ctx.newerThan) || fileContent.Time.Equal(ctx.newerThan)
+	if match && ctx.newerThan != "" {
+		match = !isNewer(fileContent.Time, ctx.newerThan)
 	}
 	if match && ctx.largerSize > 0 {
 		match = int64(ctx.largerSize) < fileContent.Size
@@ -409,43 +409,6 @@ func matchFind(ctx *findContext, fileContent contentMessage) (match bool) {
 		match = int64(ctx.smallerSize) > fileContent.Size
 	}
 	return match
-}
-
-// parseTime - parses input value into a corresponding time value in
-// time.Time by adding the input time duration to local UTC time.Now().
-func parseTime(duration string) (time.Time, *probe.Error) {
-	if duration == "" {
-		return time.Time{}, errInvalidArgument().Trace(duration)
-	}
-
-	conversion := map[string]int{
-		"d": 1,
-		"w": 7,
-		"m": 30,
-		"y": 365,
-	}
-
-	// Parse the incoming pattern if its exact number.
-	i, e := strconv.Atoi(duration)
-	if e != nil {
-		// If cant parse as regular string look for
-		// a conversion multiplier, either d,w,m,y.
-		p := duration[len(duration)-1:]
-		i, e = strconv.Atoi(duration[:len(duration)-1])
-		if e != nil {
-			// if we still cant parse, user input is invalid, return error.
-			return time.Time{}, probe.NewError(e)
-		}
-		i = i * conversion[strings.ToLower(p)]
-	}
-
-	now := UTCNow()
-
-	// Find all time in which the time in which the object was just created is after the current time
-	t := time.Date(now.Year(), now.Month(), now.Day()-i, now.Hour(), now.Minute(), 0, 0, time.UTC)
-
-	// if we reach this line, user has passed a valid alphanumeric string
-	return t, nil
 }
 
 // 7 days in seconds.
@@ -460,7 +423,7 @@ func getShareURL(path string) string {
 	clnt, err := newClientFromAlias(targetAlias, targetURLFull)
 	fatalIf(err.Trace(targetAlias, targetURLFull), "Unable to initialize client instance from alias.")
 
-	content, err := clnt.Stat(false, false, "")
+	content, err := clnt.Stat(false, false, nil)
 	fatalIf(err.Trace(targetURLFull, targetAlias), "Unable to lookup file/object.")
 
 	// Skip if its a directory.

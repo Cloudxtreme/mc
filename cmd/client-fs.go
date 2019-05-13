@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2015 Minio, Inc.
+ * MinIO Client (C) 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this fs except in compliance with the License.
@@ -19,20 +19,23 @@ package cmd
 import (
 	"context"
 	"io"
+	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
-	"io/ioutil"
+	"github.com/pkg/xattr"
+	"github.com/rjeczalik/notify"
 
 	"github.com/minio/mc/pkg/hookreader"
 	"github.com/minio/mc/pkg/ioutils"
 	"github.com/minio/mc/pkg/probe"
-	"github.com/rjeczalik/notify"
+	"github.com/minio/minio-go/pkg/encrypt"
 )
 
 // filesystem client
@@ -59,6 +62,19 @@ func fsNew(path string) (Client, *probe.Error) {
 	return &fsClient{
 		PathURL: newClientURL(normalizePath(path)),
 	}, nil
+}
+
+func isNotSupported(err error) bool {
+	if err == nil {
+		return false
+	}
+	errno := err.(*xattr.Error)
+	if errno == nil {
+		return false
+	}
+
+	// check if filesystem supports extended attributes
+	return errno.Err == syscall.Errno(syscall.ENOTSUP) || errno.Err == syscall.Errno(syscall.EOPNOTSUPP)
 }
 
 // isIgnoredFile returns true if 'filename' is on the exclude list.
@@ -96,7 +112,7 @@ func (f *fsClient) GetURL() clientURL {
 }
 
 // Select replies a stream of query results.
-func (f *fsClient) Select(expression, sseKey string) (io.ReadCloser, *probe.Error) {
+func (f *fsClient) Select(expression string, sse encrypt.ServerSide, opts SelectObjectOpts) (io.ReadCloser, *probe.Error) {
 	return nil, probe.NewError(APINotImplemented{})
 }
 
@@ -326,7 +342,7 @@ func (f *fsClient) put(reader io.Reader, size int64, metadata map[string][]strin
 }
 
 // Put - create a new file with metadata.
-func (f *fsClient) Put(ctx context.Context, reader io.Reader, size int64, metadata map[string]string, progress io.Reader, sseKey string) (int64, *probe.Error) {
+func (f *fsClient) Put(ctx context.Context, reader io.Reader, size int64, metadata map[string]string, progress io.Reader, sse encrypt.ServerSide) (int64, *probe.Error) {
 	return f.put(reader, size, nil, progress)
 }
 
@@ -365,64 +381,25 @@ func readFile(fpath string) (io.ReadCloser, error) {
 	return fileData, nil
 }
 
-// createFile creates an empty file at the provided filepath
-// if one does not exist already.
-func createFile(fpath string) (io.WriteCloser, error) {
-	if e := os.MkdirAll(filepath.Dir(fpath), 0777); e != nil {
-		return nil, e
-	}
-	file, e := os.Create(fpath)
-	if e != nil {
-		return nil, e
-	}
-	return file, nil
-}
-
 // Copy - copy data from source to destination
-func (f *fsClient) Copy(source string, size int64, progress io.Reader, srcSSEKey, tgtSSEKey string) *probe.Error {
-	// Don't use f.Get() f.Put() directly. Instead use readFile and createFile
+func (f *fsClient) Copy(source string, size int64, progress io.Reader, srcSSE, tgtSSE encrypt.ServerSide, metadata map[string]string) *probe.Error {
 	destination := f.PathURL.Path
-	if destination == source { // Cannot copy file into itself
-		return probe.NewError(SameFile{
-			Source:      source,
-			Destination: destination,
-		})
-	}
 	rc, e := readFile(source)
 	if e != nil {
 		err := f.toClientError(e, destination)
 		return err.Trace(destination)
 	}
 	defer rc.Close()
-	wc, e := createFile(destination)
-	if e != nil {
-		err := f.toClientError(e, destination)
-		return err.Trace(destination)
-	}
-	defer wc.Close()
-	reader := hookreader.NewHook(rc, progress)
-	// Perform copy
-	n, _ := io.CopyN(wc, reader, size) // e == nil only if n != size
-	// Only check size related errors if size is positive
-	if size > 0 {
-		if n < size { // Unexpected early EOF
-			return probe.NewError(UnexpectedEOF{
-				TotalSize:    size,
-				TotalWritten: n,
-			})
-		}
-		if n > size { // Unexpected ExcessRead
-			return probe.NewError(UnexpectedExcessRead{
-				TotalSize:    size,
-				TotalWritten: n,
-			})
-		}
+
+	_, err := f.put(rc, size, map[string][]string{}, progress)
+	if err != nil {
+		return err.Trace(destination, source)
 	}
 	return nil
 }
 
 // get - get wrapper returning object reader.
-func (f *fsClient) get() (io.Reader, *probe.Error) {
+func (f *fsClient) get() (io.ReadCloser, *probe.Error) {
 	tmppath := f.PathURL.Path
 	// Golang strips trailing / if you clean(..) or
 	// EvalSymlinks(..). Adding '.' prevents it from doing so.
@@ -445,12 +422,12 @@ func (f *fsClient) get() (io.Reader, *probe.Error) {
 }
 
 // Get returns reader and any additional metadata.
-func (f *fsClient) Get(sseKey string) (io.Reader, *probe.Error) {
+func (f *fsClient) Get(sse encrypt.ServerSide) (io.ReadCloser, *probe.Error) {
 	return f.get()
 }
 
 // Remove - remove entry read from clientContent channel.
-func (f *fsClient) Remove(isIncomplete bool, contentCh <-chan *clientContent) <-chan *probe.Error {
+func (f *fsClient) Remove(isIncomplete, isRemoveBucket bool, contentCh <-chan *clientContent) <-chan *probe.Error {
 	errorCh := make(chan *probe.Error)
 
 	// Goroutine reads from contentCh and removes the entry in content.
@@ -663,7 +640,8 @@ func (f *fsClient) listInRoutine(contentCh chan<- *clientContent) {
 		for _, file := range files {
 			fi := file
 			if fi.Mode()&os.ModeSymlink == os.ModeSymlink {
-				fi, e = os.Stat(filepath.Join(fpath, fi.Name()))
+				fp := filepath.Join(fpath, fi.Name())
+				fi, e = os.Stat(fp)
 				if os.IsPermission(e) {
 					contentCh <- &clientContent{
 						Err: probe.NewError(PathInsufficientPermission{Path: pathURL.Path}),
@@ -671,8 +649,12 @@ func (f *fsClient) listInRoutine(contentCh chan<- *clientContent) {
 					continue
 				}
 				if os.IsNotExist(e) {
+					// Lstat makes no attempt to follow the broken link.
+					_, e = os.Lstat(fp)
 					contentCh <- &clientContent{
-						Err: probe.NewError(BrokenSymlink{Path: file.Name()}),
+						URL:  pathURL,
+						Size: -1,
+						Err:  probe.NewError(e),
 					}
 					continue
 				}
@@ -849,10 +831,13 @@ func (f *fsClient) listRecursiveInRoutine(contentCh chan *clientContent) {
 					}
 					return nil
 				}
-				// Ignore in-accessible broken symlinks.
 				if os.IsNotExist(e) {
+					// Lstat makes no attempt to follow the broken link.
+					_, e = os.Lstat(fp)
 					contentCh <- &clientContent{
-						Err: probe.NewError(BrokenSymlink{Path: fp}),
+						URL:  *newClientURL(fp),
+						Size: -1,
+						Err:  probe.NewError(e),
 					}
 					return nil
 				}
@@ -923,34 +908,35 @@ func (f *fsClient) GetAccessRules() (map[string]string, *probe.Error) {
 }
 
 // GetAccess - get access policy permissions.
-func (f *fsClient) GetAccess() (access string, err *probe.Error) {
+func (f *fsClient) GetAccess() (access string, policyJSON string, err *probe.Error) {
 	// For windows this feature is not implemented.
 	if runtime.GOOS == "windows" {
-		return "", probe.NewError(APINotImplemented{API: "GetAccess", APIType: "filesystem"})
+		return "", "", probe.NewError(APINotImplemented{API: "GetAccess", APIType: "filesystem"})
 	}
 	st, err := f.fsStat(false)
 	if err != nil {
-		return "", err.Trace(f.PathURL.String())
+		return "", "", err.Trace(f.PathURL.String())
 	}
 	if !st.Mode().IsDir() {
-		return "", probe.NewError(APINotImplemented{API: "GetAccess", APIType: "filesystem"})
+		return "", "", probe.NewError(APINotImplemented{API: "GetAccess", APIType: "filesystem"})
 	}
 	// Mask with os.ModePerm to get only inode permissions
 	switch st.Mode() & os.ModePerm {
 	case os.FileMode(0777):
-		return "readwrite", nil
+		return "readwrite", "", nil
 	case os.FileMode(0555):
-		return "readonly", nil
+		return "readonly", "", nil
 	case os.FileMode(0333):
-		return "writeonly", nil
+		return "writeonly", "", nil
 	}
-	return "none", nil
+	return "none", "", nil
 }
 
 // SetAccess - set access policy permissions.
-func (f *fsClient) SetAccess(access string) *probe.Error {
+func (f *fsClient) SetAccess(access string, isJSON bool) *probe.Error {
 	// For windows this feature is not implemented.
-	if runtime.GOOS == "windows" {
+	// JSON policy for fs is not yet implemented.
+	if runtime.GOOS == "windows" || isJSON {
 		return probe.NewError(APINotImplemented{API: "SetAccess", APIType: "filesystem"})
 	}
 	st, err := f.fsStat(false)
@@ -979,11 +965,12 @@ func (f *fsClient) SetAccess(access string) *probe.Error {
 }
 
 // Stat - get metadata from path.
-func (f *fsClient) Stat(isIncomplete, isFetchMeta bool, sseKey string) (content *clientContent, err *probe.Error) {
+func (f *fsClient) Stat(isIncomplete, isFetchMeta bool, sse encrypt.ServerSide) (content *clientContent, err *probe.Error) {
 	st, err := f.fsStat(isIncomplete)
 	if err != nil {
 		return nil, err.Trace(f.PathURL.String())
 	}
+
 	content = &clientContent{}
 	content.URL = *f.PathURL
 	content.Size = st.Size()
@@ -992,6 +979,7 @@ func (f *fsClient) Stat(isIncomplete, isFetchMeta bool, sseKey string) (content 
 	content.Metadata = map[string]string{
 		"Content-Type": guessURLContentType(f.PathURL.Path),
 	}
+
 	// isFetchMeta is true only in the case of mc stat command which lists any extended attributes
 	// present for this object.
 	if isFetchMeta {

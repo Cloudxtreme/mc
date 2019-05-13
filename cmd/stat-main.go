@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2017 Minio, Inc.
+ * MinIO Client (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,22 +29,18 @@ var (
 	statFlags = []cli.Flag{
 		cli.BoolFlag{
 			Name:  "recursive, r",
-			Usage: "Stat recursively.",
-		},
-		cli.StringFlag{
-			Name:  "encrypt-key",
-			Usage: "Encrypt/Decrypt (using server-side encryption)",
+			Usage: "stat all objects recursively",
 		},
 	}
 )
 
-// stat files and folders.
+// show object metadata
 var statCmd = cli.Command{
 	Name:   "stat",
-	Usage:  "Stat contents of objects and folders.",
+	Usage:  "show object metadata",
 	Action: mainStat,
 	Before: setGlobalsFromContext,
-	Flags:  append(statFlags, globalFlags...),
+	Flags:  append(append(statFlags, ioFlags...), globalFlags...),
 	CustomHelpTemplate: `NAME:
   {{.HelpName}} - {{.Usage}}
 
@@ -54,9 +50,8 @@ USAGE:
 FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}
-
 ENVIRONMENT VARIABLES:
-   MC_ENCRYPT_KEY: List of comma delimited prefix=secret values
+   MC_ENCRYPT_KEY:  list of comma delimited prefix=secret values
 
 EXAMPLES:
    1. Stat all contents of mybucket on Amazon S3 cloud storage.
@@ -67,9 +62,9 @@ EXAMPLES:
 
    3. Stat files recursively on a local filesystem on Microsoft Windows.
       $ {{.HelpName}} --recursive C:\Users\Worf\
-   
-   4. Stat files which are encrypted on the server side
-      $ {{.HelpName}} --encrypt-key "s3/ferenginar=32byteslongsecretkeymustbegiven1" s3/ferenginar/klingon_opera_aktuh_maylotah.ogg
+
+   4. Stat encrypted files on Amazon S3 cloud storage.
+      $ {{.HelpName}} --encrypt-key "s3/personal-docs/=32byteslongsecretkeymustbegiven1" s3/personal-docs/2018-account_report.docx
 `,
 }
 
@@ -126,12 +121,18 @@ func mainStat(ctx *cli.Context) error {
 
 	var cErr error
 	for _, targetURL := range args {
-		var clnt Client
-		clnt, err := newClient(targetURL)
-		fatalIf(err.Trace(targetURL), "Unable to initialize target `"+targetURL+"`.")
-
-		targetAlias, _, _ := mustExpandAlias(targetURL)
-		return doStat(clnt, isRecursive, targetAlias, targetURL, encKeyDB)
+		stats, err := statURL(targetURL, false, isRecursive, encKeyDB)
+		if err != nil {
+			fatalIf(err, "Unable to stat `"+targetURL+"`.")
+		}
+		for _, stat := range stats {
+			st := parseStat(stat)
+			if !globalJSON {
+				printStat(st)
+			} else {
+				console.Println(st.JSON())
+			}
+		}
 	}
 	return cErr
 

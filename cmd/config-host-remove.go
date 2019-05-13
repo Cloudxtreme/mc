@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2017 Minio, Inc.
+ * MinIO Client (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ import (
 var configHostRemoveCmd = cli.Command{
 	Name:            "remove",
 	ShortName:       "rm",
-	Usage:           "Remove a host from configuration file.",
+	Usage:           "remove a host from configuration file",
 	Action:          mainConfigHostRemove,
 	Before:          setGlobalsFromContext,
 	Flags:           globalFlags,

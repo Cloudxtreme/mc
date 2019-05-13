@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2014, 2015 Minio, Inc.
+ * MinIO Client (C) 2014, 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ var (
 // Share documents via URL.
 var shareCmd = cli.Command{
 	Name:            "share",
-	Usage:           "Generate URL for sharing.",
+	Usage:           "generate URL for temporary access to an object",
 	Action:          mainShare,
 	Before:          setGlobalsFromContext,
 	Flags:           append(shareFlags, globalFlags...),

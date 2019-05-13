@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2014, 2015 Minio, Inc.
+ * MinIO Client (C) 2014, 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ var (
 	shareDownloadFlags = []cli.Flag{
 		cli.BoolFlag{
 			Name:  "recursive, r",
-			Usage: "Share all objects recursively.",
+			Usage: "share all objects recursively",
 		},
 		shareFlagExpire,
 	}
@@ -37,7 +37,7 @@ var (
 // Share documents via URL.
 var shareDownload = cli.Command{
 	Name:   "download",
-	Usage:  "Generate URLs for download access.",
+	Usage:  "generate URLs for download access",
 	Action: mainShareDownload,
 	Before: setGlobalsFromContext,
 	Flags:  append(shareDownloadFlags, globalFlags...),
@@ -127,7 +127,7 @@ func doShareDownloadURL(targetURL string, isRecursive bool, expiry time.Duration
 	// Channel which will receive objects whose URLs need to be shared
 	objectsCh := make(chan *clientContent)
 
-	content, err := clnt.Stat(isIncomplete, isFetchMeta, "")
+	content, err := clnt.Stat(isIncomplete, isFetchMeta, nil)
 	if err != nil {
 		return err.Trace(clnt.GetURL().String())
 	}

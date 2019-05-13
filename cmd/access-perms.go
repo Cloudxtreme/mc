@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2015 Minio, Inc.
+ * MinIO Client (C) 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,8 @@
 
 package cmd
 
+import "path/filepath"
+
 // isValidAccessPERM - is provided access perm string supported.
 func (b accessPerms) isValidAccessPERM() bool {
 	switch b {
@@ -23,6 +25,10 @@ func (b accessPerms) isValidAccessPERM() bool {
 		return true
 	}
 	return false
+}
+
+func (b accessPerms) isValidAccessFile() bool {
+	return filepath.Ext(string(b)) == ".json"
 }
 
 // accessPerms - access level.
@@ -34,4 +40,5 @@ const (
 	accessDownload = accessPerms("download")
 	accessUpload   = accessPerms("upload")
 	accessPublic   = accessPerms("public")
+	accessCustom   = accessPerms("custom")
 )

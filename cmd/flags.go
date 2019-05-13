@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2014, 2015 Minio, Inc.
+ * MinIO Client (C) 2014, 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,29 +30,37 @@ var commandsTree = trie.NewTrie()
 // Collection of mc flags currently supported
 var globalFlags = []cli.Flag{
 	cli.StringFlag{
-		Name:  "config-folder, C",
+		Name:  "config-dir, C",
 		Value: mustGetMcConfigDir(),
-		Usage: "Path to configuration folder.",
+		Usage: "path to configuration folder",
 	},
 	cli.BoolFlag{
 		Name:  "quiet, q",
-		Usage: "Disable progress bar display.",
+		Usage: "disable progress bar display",
 	},
 	cli.BoolFlag{
 		Name:  "no-color",
-		Usage: "Disable color theme.",
+		Usage: "disable color theme",
 	},
 	cli.BoolFlag{
 		Name:  "json",
-		Usage: "Enable JSON formatted output.",
+		Usage: "enable JSON formatted output",
 	},
 	cli.BoolFlag{
 		Name:  "debug",
-		Usage: "Enable debug output.",
+		Usage: "enable debug output",
 	},
 	cli.BoolFlag{
 		Name:  "insecure",
-		Usage: "Disable SSL certificate verification.",
+		Usage: "disable SSL certificate verification",
+	},
+}
+
+// Flags common across all I/O commands such as cp, mirror, stat, pipe etc.
+var ioFlags = []cli.Flag{
+	cli.StringFlag{
+		Name:  "encrypt-key",
+		Usage: "encrypt/decrypt objects (using server-side encryption with customer provided keys)",
 	},
 }
 

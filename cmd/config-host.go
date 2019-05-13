@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2017 Minio, Inc.
+ * MinIO Client (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,16 +17,15 @@
 package cmd
 
 import (
-	"encoding/json"
-
 	"github.com/minio/cli"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 )
 
 var configHostCmd = cli.Command{
 	Name:   "host",
-	Usage:  "List, modify and remove hosts in configuration file.",
+	Usage:  "list, modify and remove hosts in configuration file",
 	Action: mainConfigHost,
 	Before: setGlobalsFromContext,
 	Flags:  globalFlags,
@@ -64,28 +63,16 @@ type hostMessage struct {
 func (h hostMessage) String() string {
 	switch h.op {
 	case "list":
-		urlFieldMaxLen, apiFieldMaxLen := -1, -1
-		accessFieldMaxLen, secretFieldMaxLen := -1, -1
-		lookupFieldMaxLen := -1
-		// Set cols width if prettyPrint flag is enabled
-		if h.prettyPrint {
-			urlFieldMaxLen = 30
-			accessFieldMaxLen = 20
-			secretFieldMaxLen = 40
-			apiFieldMaxLen = 5
-			lookupFieldMaxLen = 5
-		}
-
 		// Create a new pretty table with cols configuration
-		t := newPrettyTable("  ",
-			Field{"Alias", -1},
-			Field{"URL", urlFieldMaxLen},
-			Field{"AccessKey", accessFieldMaxLen},
-			Field{"SecretKey", secretFieldMaxLen},
-			Field{"API", apiFieldMaxLen},
-			Field{"Lookup", lookupFieldMaxLen},
+		t := newPrettyRecord(2,
+			Row{"Alias", "Alias"},
+			Row{"URL", "URL"},
+			Row{"AccessKey", "AccessKey"},
+			Row{"SecretKey", "SecretKey"},
+			Row{"API", "API"},
+			Row{"Lookup", "Lookup"},
 		)
-		return t.buildRow(h.Alias, h.URL, h.AccessKey, h.SecretKey, h.API, h.Lookup)
+		return t.buildRecord(h.Alias, h.URL, h.AccessKey, h.SecretKey, h.API, h.Lookup)
 	case "remove":
 		return console.Colorize("HostMessage", "Removed `"+h.Alias+"` successfully.")
 	case "add":
@@ -98,7 +85,7 @@ func (h hostMessage) String() string {
 // JSON jsonified host message
 func (h hostMessage) JSON() string {
 	h.Status = "success"
-	jsonMessageBytes, e := json.Marshal(h)
+	jsonMessageBytes, e := json.MarshalIndent(h, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 
 	return string(jsonMessageBytes)

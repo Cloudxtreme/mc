@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2018 Minio, Inc.
+ * MinIO Client (C) 2018 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,14 +17,17 @@
 package cmd
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	humanize "github.com/dustin/go-humanize"
 	"github.com/fatih/color"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 	"github.com/minio/minio/pkg/madmin"
@@ -296,7 +299,7 @@ func (ui *uiData) printItemsJSON(s *madmin.HealTaskStatus) (err error) {
 		if err != nil {
 			return err
 		}
-		jsonBytes, err := json.Marshal(r)
+		jsonBytes, err := json.MarshalIndent(r, "", " ")
 		fatalIf(probe.NewError(err), "Unable to marshal to JSON.")
 		console.Println(string(jsonBytes))
 	}
@@ -326,7 +329,7 @@ func (ui *uiData) printStatsJSON(s *madmin.HealTaskStatus) {
 	summary.Size = ui.BytesScanned
 	summary.ElapsedTime = int64(ui.HealDuration.Round(time.Second).Seconds())
 
-	jBytes, err := json.Marshal(summary)
+	jBytes, err := json.MarshalIndent(summary, "", " ")
 	fatalIf(probe.NewError(err), "Unable to marshal to JSON.")
 	console.Println(string(jBytes))
 }
@@ -393,46 +396,58 @@ func (ui *uiData) UpdateDisplay(s *madmin.HealTaskStatus) (err error) {
 	return
 }
 
-func (ui *uiData) DisplayAndFollowHealStatus() (err error) {
-	var res madmin.HealTaskStatus
+func (ui *uiData) healResumeMsg(aliasedURL string) string {
+	var flags string
+	if ui.HealOpts.Recursive {
+		flags += "--recursive "
+	}
+	if ui.HealOpts.DryRun {
+		flags += "--dry-run "
+	}
+	return fmt.Sprintf("Healing is backgrounded, to resume watching use `mc admin heal %s %s`", flags, aliasedURL)
+}
+
+func (ui *uiData) DisplayAndFollowHealStatus(aliasedURL string) (res madmin.HealTaskStatus, err error) {
+	trapCh := signalTrap(os.Interrupt, syscall.SIGTERM, syscall.SIGKILL)
+	trapMsg := ui.healResumeMsg(aliasedURL)
 
 	firstIter := true
 	for {
-		_, res, err = ui.Client.Heal(ui.Bucket, ui.Prefix, *ui.HealOpts,
-			ui.ClientToken, ui.ForceStart)
-		if err != nil {
-			return err
-		}
-
-		if firstIter {
-			firstIter = false
-		} else {
-			if !globalQuiet && !globalJSON {
-				console.RewindLines(8)
+		select {
+		case <-trapCh:
+			return res, errors.New(trapMsg)
+		default:
+			_, res, err = ui.Client.Heal(ui.Bucket, ui.Prefix, *ui.HealOpts,
+				ui.ClientToken, ui.ForceStart, false)
+			if err != nil {
+				return res, err
 			}
-		}
-		err = ui.UpdateDisplay(&res)
-		if err != nil {
-			return err
-		}
+			if firstIter {
+				firstIter = false
+			} else {
+				if !globalQuiet && !globalJSON {
+					console.RewindLines(8)
+				}
+			}
+			err = ui.UpdateDisplay(&res)
+			if err != nil {
+				return res, err
+			}
 
-		if res.Summary == "finished" {
-			break
-		}
+			if res.Summary == "finished" {
+				if globalJSON {
+					ui.printStatsJSON(&res)
+				} else if globalQuiet {
+					ui.printStatsQuietly(&res)
+				}
+				return res, nil
+			}
 
-		if res.Summary == "stopped" {
-			fmt.Println("Heal had an error - ", res.FailureDetail)
-			break
-		}
+			if res.Summary == "stopped" {
+				return res, fmt.Errorf("Heal had an error - %s", res.FailureDetail)
+			}
 
-		time.Sleep(time.Second)
+			time.Sleep(time.Second)
+		}
 	}
-	if globalJSON {
-		ui.printStatsJSON(&res)
-		return nil
-	}
-	if globalQuiet {
-		ui.printStatsQuietly(&res)
-	}
-	return nil
 }

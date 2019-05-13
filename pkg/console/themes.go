@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2015 Minio, Inc.
+ * MinIO Client (C) 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ var (
 		"Error":  color.New(color.FgYellow, color.Italic),
 		"Info":   color.New(color.FgGreen, color.Bold),
 		"Print":  color.New(),
+		"PrintB": color.New(color.FgBlue, color.Bold),
 		"PrintC": color.New(color.FgGreen, color.Bold),
 	}
 )

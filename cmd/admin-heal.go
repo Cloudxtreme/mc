@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2017, 2018 Minio, Inc.
+ * MinIO Client (C) 2017, 2018 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,32 +18,52 @@ package cmd
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/fatih/color"
 	"github.com/minio/cli"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 	"github.com/minio/minio/pkg/madmin"
 )
 
+const (
+	scanNormalMode = "normal"
+	scanDeepMode   = "deep"
+)
+
 var adminHealFlags = []cli.Flag{
+	cli.StringFlag{
+		Name:  "scan",
+		Usage: "select the healing scan mode (normal/deep)",
+		Value: scanNormalMode,
+	},
 	cli.BoolFlag{
 		Name:  "recursive, r",
-		Usage: "Heal recursively",
+		Usage: "heal recursively",
 	},
 	cli.BoolFlag{
 		Name:  "dry-run, n",
-		Usage: "Only inspect data, but do not mutate",
+		Usage: "only inspect data, but do not mutate",
 	},
 	cli.BoolFlag{
 		Name:  "force-start, f",
-		Usage: "Force start a new heal sequence",
+		Usage: "force start a new heal sequence",
+	},
+	cli.BoolFlag{
+		Name:  "force-stop, s",
+		Usage: "Force stop a running heal sequence",
+	},
+	cli.BoolFlag{
+		Name:  "remove",
+		Usage: "remove dangling objects in heal sequence",
 	},
 }
 
 var adminHealCmd = cli.Command{
 	Name:            "heal",
-	Usage:           "Heal disks, buckets and objects on Minio server",
+	Usage:           "heal disks, buckets and objects on MinIO server",
 	Action:          mainAdminHeal,
 	Before:          setGlobalsFromContext,
 	Flags:           append(adminHealFlags, globalFlags...),
@@ -57,11 +77,16 @@ USAGE:
 FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}
+
+SCAN MODES:
+   normal (default): Heal objects which are missing on one or more disks.
+   deep            : Heal objects which are missing on one or more disks. Also heal objects with silent data corruption.
+
 EXAMPLES:
-    1. To format newly replaced disks in a Minio server with alias 'play'
+    1. To format newly replaced disks in a MinIO server with alias 'play'
        $ {{.HelpName}} play
 
-    2. Heal 'testbucket' in a Minio server with alias 'play'
+    2. Heal 'testbucket' in a MinIO server with alias 'play'
        $ {{.HelpName}} play/testbucket/
 
     3. Heal all objects under 'dir' prefix
@@ -80,6 +105,40 @@ func checkAdminHealSyntax(ctx *cli.Context) {
 	if len(ctx.Args()) != 1 {
 		cli.ShowCommandHelpAndExit(ctx, "heal", 1) // last argument is exit code
 	}
+
+	// Check for scan argument
+	scanArg := ctx.String("scan")
+	scanArg = strings.ToLower(scanArg)
+	if scanArg != scanNormalMode && scanArg != scanDeepMode {
+		cli.ShowCommandHelpAndExit(ctx, "heal", 1) // last argument is exit code
+	}
+}
+
+// stopHealMessage is container for stop heal success and failure messages.
+type stopHealMessage struct {
+	Status string `json:"status"`
+	Alias  string `json:"alias"`
+}
+
+// String colorized stop heal message.
+func (s stopHealMessage) String() string {
+	return console.Colorize("HealStopped", "Heal stopped successfully at `"+s.Alias+"`.")
+}
+
+// JSON jsonified stop heal message.
+func (s stopHealMessage) JSON() string {
+	stopHealJSONBytes, e := json.MarshalIndent(s, "", " ")
+	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
+
+	return string(stopHealJSONBytes)
+}
+
+func transformScanArg(scanArg string) madmin.HealScanMode {
+	switch scanArg {
+	case "deep":
+		return madmin.HealDeepScan
+	}
+	return madmin.HealNormalScan
 }
 
 // mainAdminHeal - the entry function of heal command
@@ -94,8 +153,9 @@ func mainAdminHeal(ctx *cli.Context) error {
 
 	console.SetColor("Heal", color.New(color.FgGreen, color.Bold))
 	console.SetColor("HealUpdateUI", color.New(color.FgYellow, color.Bold))
+	console.SetColor("HealStopped", color.New(color.FgGreen, color.Bold))
 
-	// Create a new Minio Admin Client
+	// Create a new MinIO Admin Client
 	client, err := newAdminClient(aliasedURL)
 	if err != nil {
 		fatalIf(err.Trace(aliasedURL), "Cannot initialize admin client.")
@@ -108,11 +168,22 @@ func mainAdminHeal(ctx *cli.Context) error {
 	bucket, prefix := splits[1], splits[2]
 
 	opts := madmin.HealOpts{
+		ScanMode:  transformScanArg(ctx.String("scan")),
+		Remove:    ctx.Bool("remove"),
 		Recursive: ctx.Bool("recursive"),
 		DryRun:    ctx.Bool("dry-run"),
 	}
+
 	forceStart := ctx.Bool("force-start")
-	healStart, _, herr := client.Heal(bucket, prefix, opts, "", forceStart)
+	forceStop := ctx.Bool("force-stop")
+	if forceStop {
+		_, _, herr := client.Heal(bucket, prefix, opts, "", forceStart, forceStop)
+		errorIf(probe.NewError(herr), "Failed to stop heal sequence.")
+		printMsg(stopHealMessage{Status: "success", Alias: aliasedURL})
+		return nil
+	}
+
+	healStart, _, herr := client.Heal(bucket, prefix, opts, "", forceStart, false)
 	errorIf(probe.NewError(herr), "Failed to start heal sequence.")
 
 	ui := uiData{
@@ -126,10 +197,16 @@ func mainAdminHeal(ctx *cli.Context) error {
 		HealthCols:            make(map[col]int64),
 		CurChan:               cursorAnimate(),
 	}
-	errorIf(
-		probe.NewError(ui.DisplayAndFollowHealStatus()),
-		"Unable to display follow heal status.",
-	)
 
-	return herr
+	res, e := ui.DisplayAndFollowHealStatus(aliasedURL)
+	if e != nil {
+		if res.FailureDetail != "" {
+			data, _ := json.MarshalIndent(res, "", " ")
+			traceStr := string(data)
+			errorIf(probe.NewError(e).Trace(aliasedURL, traceStr), "Unable to display heal status.")
+		} else {
+			errorIf(probe.NewError(e).Trace(aliasedURL), "Unable to display heal status.")
+		}
+	}
+	return nil
 }

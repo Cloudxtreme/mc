@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2017 Minio, Inc.
+ * MinIO Client (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,17 +30,17 @@ var hostAddFlags = []cli.Flag{
 	cli.StringFlag{
 		Name:  "lookup",
 		Value: "auto",
-		Usage: "bucket lookup supported by the server. Valid options are `[dns,path,auto]`",
+		Usage: "bucket lookup supported by the server. Valid options are '[dns,path,auto]'",
 	},
 	cli.StringFlag{
 		Name:  "api",
-		Usage: "API signature. Valid options are `[S3v4, S3v2]`",
+		Usage: "API signature. Valid options are '[S3v4, S3v2]'",
 	},
 }
 var configHostAddCmd = cli.Command{
 	Name:            "add",
 	ShortName:       "a",
-	Usage:           "Add a new host to configuration file.",
+	Usage:           "add a new host to configuration file",
 	Action:          mainConfigHostAdd,
 	Before:          setGlobalsFromContext,
 	Flags:           append(hostAddFlags, globalFlags...),
@@ -49,7 +49,7 @@ var configHostAddCmd = cli.Command{
   {{.HelpName}} - {{.Usage}}
 
 USAGE:
-  {{.HelpName}} ALIAS URL ACCESS-KEY SECRET-KEY
+  {{.HelpName}} ALIAS URL ACCESSKEY SECRETKEY
 
 FLAGS:
   {{range .VisibleFlags}}{{.}}
@@ -168,7 +168,7 @@ func probeS3Signature(accessKey, secretKey, url string) (string, *probe.Error) {
 		return "", err
 	}
 
-	if _, err = s3Client.Stat(false, false, ""); err != nil {
+	if _, err = s3Client.Stat(false, false, nil); err != nil {
 		switch err.ToGoError().(type) {
 		case BucketDoesNotExist:
 			// Bucket doesn't exist, means signature probing worked V4.
@@ -179,7 +179,7 @@ func probeS3Signature(accessKey, secretKey, url string) (string, *probe.Error) {
 			if err != nil {
 				return "", err
 			}
-			if _, err = s3Client.Stat(false, false, ""); err != nil {
+			if _, err = s3Client.Stat(false, false, nil); err != nil {
 				switch err.ToGoError().(type) {
 				case BucketDoesNotExist:
 					// Bucket doesn't exist, means signature probing worked with V2.
@@ -227,7 +227,7 @@ func mainConfigHostAdd(ctx *cli.Context) error {
 	console.SetColor("HostMessage", color.New(color.FgGreen))
 	var (
 		args      = ctx.Args()
-		url       = args.Get(1)
+		url       = trimTrailingSeparator(args.Get(1))
 		accessKey = args.Get(2)
 		secretKey = args.Get(3)
 		api       = ctx.String("api")

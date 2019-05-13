@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2015 Minio, Inc.
+ * MinIO Client (C) 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -97,10 +97,6 @@ func prepareCopyURLsTypeA(sourceURL string, targetURL string, encKeyDB map[strin
 		// Source is not a regular file
 		return URLs{Error: errInvalidSource(sourceURL).Trace(sourceURL)}
 	}
-	if sourceContent.URL.String() == targetURL {
-		// source and target can not be same
-		return URLs{Error: errSourceTargetSame(sourceURL).Trace(sourceURL)}
-	}
 
 	// All OK.. We can proceed. Type A
 	return makeCopyContentTypeA(sourceAlias, sourceContent, targetAlias, targetURL, encKeyDB)
@@ -109,20 +105,11 @@ func prepareCopyURLsTypeA(sourceURL string, targetURL string, encKeyDB map[strin
 // prepareCopyContentTypeA - makes CopyURLs content for copying.
 func makeCopyContentTypeA(sourceAlias string, sourceContent *clientContent, targetAlias string, targetURL string, encKeyDB map[string][]prefixSSEPair) URLs {
 	targetContent := clientContent{URL: *newClientURL(targetURL)}
-
-	sourcePath := filepath.ToSlash(filepath.Join(sourceAlias, sourceContent.URL.Path))
-	targetPath := filepath.ToSlash(filepath.Join(targetAlias, targetContent.URL.Path))
-
-	srcSSEKey := getSSEKey(sourcePath, encKeyDB[sourceAlias])
-	tgtSSEKey := getSSEKey(targetPath, encKeyDB[targetAlias])
-
 	return URLs{
 		SourceAlias:   sourceAlias,
 		SourceContent: sourceContent,
 		TargetAlias:   targetAlias,
 		TargetContent: &targetContent,
-		SrcSSEKey:     srcSSEKey,
-		TgtSSEKey:     tgtSSEKey,
 	}
 }
 

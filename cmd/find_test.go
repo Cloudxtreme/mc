@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2017 Minio, Inc.
+ * MinIO Client (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -57,13 +57,13 @@ func TestMatchFind(t *testing.T) {
 			clnt: &s3Client{
 				targetURL: &clientURL{},
 			},
-			olderThan: time.Unix(12000, 0).UTC(),
+			olderThan: "1d",
 		},
 		&findContext{
 			clnt: &s3Client{
 				targetURL: &clientURL{},
 			},
-			newerThan: time.Unix(12000, 0).UTC(),
+			newerThan: "32000d",
 		},
 		&findContext{
 			clnt: &s3Client{
@@ -337,57 +337,6 @@ func TestFindMatch(t *testing.T) {
 	}
 }
 
-// Tests for parsing time layout.
-func TestParseTime(t *testing.T) {
-	testCases := []struct {
-		value   string
-		success bool
-	}{
-		// Parses 1 day successfully.
-		{
-			value:   "1d",
-			success: true,
-		},
-		// Parses 1 week successfully.
-		{
-			value:   "1w",
-			success: true,
-		},
-		// Parses 1 year successfully.
-		{
-			value:   "1y",
-			success: true,
-		},
-		// Parses 2 months successfully.
-		{
-			value:   "2m",
-			success: true,
-		},
-		// Failure to parse "xd".
-		{
-			value:   "xd",
-			success: false,
-		},
-		// Failure to parse empty string.
-		{
-			value:   "",
-			success: false,
-		},
-	}
-	for i, testCase := range testCases {
-		pt, err := parseTime(testCase.value)
-		if err != nil && testCase.success {
-			t.Errorf("Test: %d, Expected to be successful, but found error %s, for time value %s", i+1, err, testCase.value)
-		}
-		if pt.IsZero() && testCase.success {
-			t.Errorf("Test: %d, Expected time to be non zero, but found zero time for time value %s", i+1, testCase.value)
-		}
-		if err == nil && !testCase.success {
-			t.Errorf("Test: %d, Expected error but found to be successful for time value %s", i+1, testCase.value)
-		}
-	}
-}
-
 // Tests string substitution function.
 func TestStringReplace(t *testing.T) {
 	testCases := []struct {
@@ -434,7 +383,7 @@ func TestStringReplace(t *testing.T) {
 		// Tests string replace {"size"} with quotes.
 		{
 			str:         `{"size"}`,
-			expectedStr: `"0B"`,
+			expectedStr: `"0 B"`,
 			content:     contentMessage{Size: 0},
 		},
 		// Tests string replace {"time"} with quotes.
@@ -448,7 +397,7 @@ func TestStringReplace(t *testing.T) {
 		// Tests string replace {size}
 		{
 			str:         `{size}`,
-			expectedStr: `1.0MiB`,
+			expectedStr: `1.0 MiB`,
 			content:     contentMessage{Size: 1024 * 1024},
 		},
 		// Tests string replace {time}

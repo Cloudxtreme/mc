@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2015 Minio, Inc.
+ * MinIO Client (C) 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,9 @@
 
 package cmd
 
-import "github.com/minio/mc/pkg/probe"
+import (
+	"github.com/minio/mc/pkg/probe"
+)
 
 // URLs contains source and target urls
 type URLs struct {
@@ -27,8 +29,6 @@ type URLs struct {
 	TotalCount    int64
 	TotalSize     int64
 	encKeyDB      map[string][]prefixSSEPair
-	SrcSSEKey     string
-	TgtSSEKey     string
 	Error         *probe.Error `json:"-"`
 }
 

@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2015 Minio, Inc.
+ * MinIO Client (C) 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,12 +17,12 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/fatih/color"
 	"github.com/minio/cli"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 )
@@ -32,10 +32,10 @@ var (
 	diffFlags = []cli.Flag{}
 )
 
-// Compute differences between two files or folders.
+// Compute differences in object name, size, and date between two buckets.
 var diffCmd = cli.Command{
 	Name:   "diff",
-	Usage:  "List differences in object name, size, and date between folders.",
+	Usage:  "list differences in object name, size, and date between two buckets",
 	Action: mainDiff,
 	Before: setGlobalsFromContext,
 	Flags:  append(diffFlags, globalFlags...),
@@ -50,7 +50,7 @@ FLAGS:
   {{end}}
 DESCRIPTION:
   Diff only calculates differences in object name, size and time.
-  It *DOES NOT* compare objects' contents. 
+  It *DOES NOT* compare objects' contents.
 
 LEGEND:
     > - object is only in source.
@@ -102,7 +102,7 @@ func (d diffMessage) String() string {
 // JSON jsonified diff message
 func (d diffMessage) JSON() string {
 	d.Status = "success"
-	diffJSONBytes, e := json.Marshal(d)
+	diffJSONBytes, e := json.MarshalIndent(d, "", " ")
 	fatalIf(probe.NewError(e),
 		"Unable to marshal diff message `"+d.FirstURL+"`, `"+d.SecondURL+"` and `"+string(d.Diff)+"`.")
 	return string(diffJSONBytes)

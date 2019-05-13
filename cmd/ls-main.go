@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2014, 2015 Minio, Inc.
+ * MinIO Client (C) 2014-2019 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,15 +29,11 @@ var (
 	lsFlags = []cli.Flag{
 		cli.BoolFlag{
 			Name:  "recursive, r",
-			Usage: "List recursively.",
+			Usage: "list recursively",
 		},
 		cli.BoolFlag{
 			Name:  "incomplete, I",
-			Usage: "List incomplete uploads.",
-		},
-		cli.StringFlag{
-			Name:  "encrypt-key",
-			Usage: "Encrypt/Decrypt (using server-side encryption)",
+			Usage: "list incomplete uploads",
 		},
 	}
 )
@@ -45,7 +41,7 @@ var (
 // list files and folders.
 var lsCmd = cli.Command{
 	Name:   "ls",
-	Usage:  "List files and folders.",
+	Usage:  "list buckets and objects",
 	Action: mainList,
 	Before: setGlobalsFromContext,
 	Flags:  append(lsFlags, globalFlags...),
@@ -74,7 +70,7 @@ EXAMPLES:
    5. List files recursively on a local filesystem on Microsoft Windows.
       $ {{.HelpName}} --recursive C:\Users\Worf\
 
-   6. List incomplete (previously failed) uploads of objects on Amazon S3. 
+   6. List incomplete (previously failed) uploads of objects on Amazon S3.
       $ {{.HelpName}} --incomplete s3/mybucket
 
 `,
@@ -95,12 +91,8 @@ func checkListSyntax(ctx *cli.Context) {
 	URLs := ctx.Args()
 	isIncomplete := ctx.Bool("incomplete")
 
-	// Parse encryption keys per command.
-	encKeyDB, err := getEncKeys(ctx)
-	fatalIf(err, "Unable to parse encryption keys.")
-
 	for _, url := range URLs {
-		_, _, err := url2Stat(url, false, encKeyDB)
+		_, _, err := url2Stat(url, false, nil)
 		if err != nil && !isURLPrefixExists(url, isIncomplete) {
 			// Bucket name empty is a valid error for 'ls myminio',
 			// treat it as such.
@@ -135,26 +127,19 @@ func mainList(ctx *cli.Context) error {
 
 	var cErr error
 	for _, targetURL := range args {
-		var clnt Client
 		clnt, err := newClient(targetURL)
 		fatalIf(err.Trace(targetURL), "Unable to initialize target `"+targetURL+"`.")
 
-		var st *clientContent
-		if st, err = clnt.Stat(isIncomplete, false, ""); err != nil {
-			switch err.ToGoError().(type) {
-			case BucketNameEmpty:
-			// For aliases like ``mc ls s3`` it's acceptable to receive BucketNameEmpty error.
-			// Nothing to do.
-			default:
+		if !strings.HasSuffix(targetURL, string(clnt.GetURL().Separator)) {
+			var st *clientContent
+			st, err = clnt.Stat(isIncomplete, false, nil)
+			if err == nil && st.Type.IsDir() {
+				targetURL = targetURL + string(clnt.GetURL().Separator)
+				clnt, err = newClient(targetURL)
 				fatalIf(err.Trace(targetURL), "Unable to initialize target `"+targetURL+"`.")
 			}
-		} else if st.Type.IsDir() {
-			if !strings.HasSuffix(targetURL, string(clnt.GetURL().Separator)) {
-				targetURL = targetURL + string(clnt.GetURL().Separator)
-			}
-			clnt, err = newClient(targetURL)
-			fatalIf(err.Trace(targetURL), "Unable to initialize target `"+targetURL+"`.")
 		}
+
 		if e := doList(clnt, isRecursive, isIncomplete); e != nil {
 			cErr = e
 		}

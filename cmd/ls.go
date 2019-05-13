@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2015 Minio, Inc.
+ * MinIO Client (C) 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,14 +17,14 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
-	"github.com/dustin/go-humanize"
+	humanize "github.com/dustin/go-humanize"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 )
@@ -47,7 +47,7 @@ type contentMessage struct {
 // String colorized string message.
 func (c contentMessage) String() string {
 	message := console.Colorize("Time", fmt.Sprintf("[%s] ", c.Time.Format(printDate)))
-	message = message + console.Colorize("Size", fmt.Sprintf("%6s ", humanize.IBytes(uint64(c.Size))))
+	message = message + console.Colorize("Size", fmt.Sprintf("%7s ", strings.Join(strings.Fields(humanize.IBytes(uint64(c.Size))), "")))
 	message = func() string {
 		if c.Filetype == "folder" {
 			return message + console.Colorize("Dir", fmt.Sprintf("%s", c.Key))
@@ -60,7 +60,7 @@ func (c contentMessage) String() string {
 // JSON jsonified content message.
 func (c contentMessage) JSON() string {
 	c.Status = "success"
-	jsonMessageBytes, e := json.Marshal(c)
+	jsonMessageBytes, e := json.MarshalIndent(c, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 
 	return string(jsonMessageBytes)
@@ -140,6 +140,8 @@ func doList(clnt Client, isRecursive, isIncomplete bool) error {
 		contentURL := filepath.ToSlash(content.URL.Path)
 		prefixPath = filepath.ToSlash(prefixPath)
 
+		// Trim prefix of current working dir
+		prefixPath = strings.TrimPrefix(prefixPath, "."+separator)
 		// Trim prefix path from the content path.
 		contentURL = strings.TrimPrefix(contentURL, prefixPath)
 		content.URL.Path = contentURL

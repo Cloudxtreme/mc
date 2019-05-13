@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2017 Minio, Inc.
+ * MinIO Client (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ import (
 var configHostListCmd = cli.Command{
 	Name:            "list",
 	ShortName:       "ls",
-	Usage:           "Lists hosts in configuration file.",
+	Usage:           "list hosts in configuration file",
 	Action:          mainConfigHostList,
 	Before:          setGlobalsFromContext,
 	Flags:           globalFlags,
@@ -72,12 +72,11 @@ func mainConfigHostList(ctx *cli.Context) error {
 	checkConfigHostListSyntax(ctx)
 
 	// Additional command speific theme customization.
-	console.SetColor("HostMessage", color.New(color.FgGreen))
 	console.SetColor("Alias", color.New(color.FgCyan, color.Bold))
-	console.SetColor("URL", color.New(color.FgCyan))
-	console.SetColor("AccessKey", color.New(color.FgBlue))
-	console.SetColor("SecretKey", color.New(color.FgBlue))
-	console.SetColor("API", color.New(color.FgYellow))
+	console.SetColor("URL", color.New(color.FgYellow))
+	console.SetColor("AccessKey", color.New(color.FgCyan))
+	console.SetColor("SecretKey", color.New(color.FgCyan))
+	console.SetColor("API", color.New(color.FgBlue))
 	console.SetColor("Lookup", color.New(color.FgCyan))
 
 	args := ctx.Args()
@@ -96,7 +95,7 @@ func printHosts(hosts ...hostMessage) {
 	for _, host := range hosts {
 		if !globalJSON {
 			// Format properly for alignment based on alias length only in non json mode.
-			host.Alias = fmt.Sprintf("%-*.*s:", maxAlias, maxAlias, host.Alias)
+			host.Alias = fmt.Sprintf("%-*.*s", maxAlias, maxAlias, host.Alias)
 		}
 		if host.AccessKey == "" || host.SecretKey == "" {
 			host.AccessKey = ""

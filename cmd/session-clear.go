@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2017 Minio, Inc.
+ * MinIO Client (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,9 @@
 package cmd
 
 import (
-	"encoding/json"
-
 	"github.com/fatih/color"
 	"github.com/minio/cli"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 )
@@ -28,20 +27,20 @@ import (
 var sessionClearFlags = []cli.Flag{
 	cli.BoolFlag{
 		Name:  "force",
-		Usage: "Force a dangerous clear operation.",
+		Usage: "force a dangerous clear operation.",
 	},
 }
 
 var sessionClear = cli.Command{
 	Name:            "clear",
-	Usage:           "Clear a previously saved session.",
+	Usage:           "clear interrupted session",
 	Action:          mainSessionClear,
 	Before:          setGlobalsFromContext,
 	Flags:           append(sessionClearFlags, globalFlags...),
 	HideHelpCommand: true,
 	CustomHelpTemplate: `NAME:
   {{.HelpName}} - {{.Usage}}
-  
+
 USAGE:
   {{.HelpName}} SESSION-ID|all
 
@@ -82,7 +81,7 @@ func (c clearSessionMessage) String() string {
 
 // JSON jsonified clear session message.
 func (c clearSessionMessage) JSON() string {
-	clearSessionJSONBytes, e := json.Marshal(c)
+	clearSessionJSONBytes, e := json.MarshalIndent(c, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 
 	return string(clearSessionJSONBytes)

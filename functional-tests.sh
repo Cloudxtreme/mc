@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Minio Client (C) 2017 Minio, Inc.
+# MinIO Client (C) 2017 MinIO, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,16 +17,16 @@
 
 ################################################################################
 #
-# This script is usable by mc functional tests, mint tests and minio verfication
+# This script is usable by mc functional tests, mint tests and MinIO verification
 # tests.
 #
 # * As mc functional tests, just run this script.  It uses mc executable binary
-#   in current working directory or in the path.  The tests uses play.minio.io
-#   as minio server.
+#   in current working directory or in the path.  The tests uses play.min.io
+#   as MinIO server.
 #
 # * For other, call this script with environment variables MINT_MODE,
 #   MINT_DATA_DIR, SERVER_ENDPOINT, ACCESS_KEY, SECRET_KEY and ENABLE_HTTPS. It
-#   uses mc executable binary in current working directory and uses given minio
+#   uses mc executable binary in current working directory and uses given MinIO
 #   server to run tests. MINT_MODE is set by mint to specify what category of
 #   tests to run.
 #
@@ -55,11 +55,10 @@ if [ -n "$MINT_MODE" ]; then
 fi
 
 if [ -z "${SERVER_ENDPOINT+x}" ]; then
-    SERVER_ENDPOINT="play.minio.io:9000"
+    SERVER_ENDPOINT="play.min.io:9000"
     ACCESS_KEY="Q3AM3UQ867SPQQA43P2F"
     SECRET_KEY="zuf+tfteSlswRu7BJ86wekitnifILbZam1KYY3TG"
     ENABLE_HTTPS=1
-    SERVER_REGION="us-east-1"
 fi
 
 WORK_DIR="$PWD"
@@ -69,8 +68,10 @@ if [ -z "$MINT_MODE" ]; then
     DATA_DIR="$WORK_DIR/data"
 fi
 
+FILE_0_B="$DATA_DIR/datafile-0-b"
 FILE_1_MB="$DATA_DIR/datafile-1-MB"
 FILE_65_MB="$DATA_DIR/datafile-65-MB"
+declare FILE_0_B_MD5SUM
 declare FILE_1_MB_MD5SUM
 declare FILE_65_MB_MD5SUM
 
@@ -232,7 +233,7 @@ function test_make_bucket()
     start_time=$(get_time)
     bucket_name="mc-test-bucket-$RANDOM"
     assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd mb "${SERVER_ALIAS}/${bucket_name}"
-    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rm "${SERVER_ALIAS}/${bucket_name}"
+    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rb "${SERVER_ALIAS}/${bucket_name}"
 
     log_success "$start_time" "${FUNCNAME[0]}"
 }
@@ -256,7 +257,7 @@ function setup()
 function teardown()
 {
     start_time=$(get_time)
-    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rm --force --recursive "${SERVER_ALIAS}/${BUCKET_NAME}"
+    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rb --force "${SERVER_ALIAS}/${BUCKET_NAME}"
 }
 
 function test_put_object()
@@ -294,6 +295,20 @@ function test_put_object_multipart()
     log_success "$start_time" "${FUNCNAME[0]}"
 }
 
+function test_put_object_0byte()
+{
+    show "${FUNCNAME[0]}"
+
+    start_time=$(get_time)
+    object_name="mc-test-object-$RANDOM"
+    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd cp "${FILE_0_B}" "${SERVER_ALIAS}/${BUCKET_NAME}/${object_name}"
+    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd cp "${SERVER_ALIAS}/${BUCKET_NAME}/${object_name}" "${object_name}.downloaded"
+    assert_success "$start_time" "${FUNCNAME[0]}" check_md5sum "$FILE_0_B_MD5SUM" "${object_name}.downloaded"
+    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rm "${object_name}.downloaded" "${SERVER_ALIAS}/${BUCKET_NAME}/${object_name}"
+
+    log_success "$start_time" "${FUNCNAME[0]}"
+}
+
 ## Test mc cp command with storage-class flag set
 function test_put_object_with_storage_class()
 {
@@ -317,6 +332,21 @@ function test_put_object_with_storage_class_error()
     assert_failure "$start_time" "${FUNCNAME[0]}" mc_cmd cp --storage-class REDUCED "${FILE_1_MB}" "${SERVER_ALIAS}/${BUCKET_NAME}/${object_name}"
 
     log_success "$start_time" "${FUNCNAME[0]}"
+}
+
+## Test mc cp command with valid metadata string
+function test_put_object_with_metadata()
+{
+    show "${FUNCNAME[0]}"
+
+    start_time=$(get_time)
+    object_name="mc-test-object-$RANDOM"
+    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd cp --attr key1=val1,key2=val2 "${FILE_1_MB}" "${SERVER_ALIAS}/${BUCKET_NAME}/${object_name}"
+    diff -bB <(echo "val1")  <("${MC_CMD[@]}"   --json stat "${SERVER_ALIAS}/${BUCKET_NAME}/${object_name}"  |  jq -r '.metadata."X-Amz-Meta-Key1"')  >/dev/null 2>&1
+    assert_success "$start_time" "${FUNCNAME[0]}" show_on_failure $? "unable to put object with metadata"
+    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rm "${SERVER_ALIAS}/${BUCKET_NAME}/${object_name}"
+    log_success "$start_time" "${FUNCNAME[0]}"
+
 }
 
 function test_get_object()
@@ -357,8 +387,16 @@ function test_presigned_post_policy_error()
     out=$("${MC_CMD[@]}" --json share upload "${SERVER_ALIAS}/${BUCKET_NAME}/${object_name}")
     assert_success "$start_time" "${FUNCNAME[0]}" show_on_failure $? "unable to get presigned post policy and put object url"
 
+    # Support IPv6 address, IPv6 is specifed as [host]:9000 form, we should
+    # replace '['']' with their escaped values as '\[' '\]'.
+    #
+    # Without escaping '['']', 'sed' command interprets them as expressions
+    # which fails our requirement of replacing $endpoint/$bucket URLs in the
+    # subsequent operations.
+    endpoint=$(echo "$ENDPOINT" | sed 's|[][]|\\&|g')
+
     # Extract share field of json output, and append object name to the URL
-    upload=$(echo "$out" | jq -r .share | sed "s|<FILE>|$FILE_1_MB|g" | sed "s|curl|curl -sS|g" | sed "s|${ENDPOINT}/${BUCKET_NAME}/|${ENDPOINT}/${BUCKET_NAME}/${object_name}|g")
+    upload=$(echo "$out" | jq -r .share | sed "s|<FILE>|$FILE_1_MB|g" | sed "s|curl|curl -sSg|g" | sed "s|${endpoint}/${BUCKET_NAME}/|${endpoint}/${BUCKET_NAME}/${object_name}|g")
 
     # In case of virtual host style URL path, the previous replace would have failed.
     # One of the following two commands will append the object name in that scenario.
@@ -389,7 +427,7 @@ function test_presigned_put_object()
 
     out=$("${MC_CMD[@]}" --json share upload "${SERVER_ALIAS}/${BUCKET_NAME}/${object_name}")
     assert_success "$start_time" "${FUNCNAME[0]}" show_on_failure $? "unable to get presigned put object url"
-    upload=$(echo "$out" | jq -r .share | sed "s|<FILE>|$FILE_1_MB|g" | sed "s|curl|curl -sS|g")
+    upload=$(echo "$out" | jq -r .share | sed "s|<FILE>|$FILE_1_MB|g" | sed "s|curl|curl -sSg|g")
     $upload >/dev/null 2>&1
     assert_success "$start_time" "${FUNCNAME[0]}" show_on_failure $? "unable to upload $FILE_1_MB presigned put object url"
 
@@ -411,7 +449,7 @@ function test_presigned_get_object()
     out=$("${MC_CMD[@]}" --json share download "${SERVER_ALIAS}/${BUCKET_NAME}/${object_name}")
     assert_success "$start_time" "${FUNCNAME[0]}" show_on_failure $? "unable to get presigned get object url"
     download_url=$(echo "$out" | jq -r .share)
-    curl --output "${object_name}.downloaded" -sS -X GET "$download_url"
+    curl -sSg --output "${object_name}.downloaded" -X GET "$download_url"
     assert_success "$start_time" "${FUNCNAME[0]}" show_on_failure $? "unable to download $download_url"
 
     assert_success "$start_time" "${FUNCNAME[0]}" check_md5sum "$FILE_1_MB_MD5SUM" "${object_name}.downloaded"
@@ -445,10 +483,10 @@ function test_mirror_list_objects()
     assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd mb "${SERVER_ALIAS}/${bucket_name}"
     assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd mirror "$DATA_DIR" "${SERVER_ALIAS}/${bucket_name}"
 
-    diff -bB <(ls "$DATA_DIR") <("${MC_CMD[@]}" --json ls "${SERVER_ALIAS}/${bucket_name}" | jq -r .key) >/dev/null 2>&1
+    diff -bB <(ls "$DATA_DIR") <("${MC_CMD[@]}" --json ls "${SERVER_ALIAS}/${bucket_name}/" | jq -r .key) >/dev/null 2>&1
     assert_success "$start_time" "${FUNCNAME[0]}" show_on_failure $? "mirror and list differs"
 
-    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rm --force --recursive "${SERVER_ALIAS}/${bucket_name}"
+    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rb --force "${SERVER_ALIAS}/${bucket_name}"
 
     log_success "$start_time" "${FUNCNAME[0]}"
 }
@@ -464,15 +502,15 @@ function test_mirror_list_objects_storage_class()
     assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd mb "${SERVER_ALIAS}/${bucket_name}"
     assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd mirror --storage-class REDUCED_REDUNDANCY "$DATA_DIR" "${SERVER_ALIAS}/${bucket_name}"
 
-    diff -bB <(ls "$DATA_DIR") <("${MC_CMD[@]}" --json ls "${SERVER_ALIAS}/${bucket_name}" | jq -r .key) >/dev/null 2>&1
+    diff -bB <(ls "$DATA_DIR") <("${MC_CMD[@]}" --json ls "${SERVER_ALIAS}/${bucket_name}/" | jq -r .key) >/dev/null 2>&1
     assert_success "$start_time" "${FUNCNAME[0]}" show_on_failure $? "mirror and list differs"
 
-    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rm --force --recursive "${SERVER_ALIAS}/${bucket_name}"
+    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rb --force "${SERVER_ALIAS}/${bucket_name}"
 
     log_success "$start_time" "${FUNCNAME[0]}"
 }
 
-## Tests find command with --older set to 1day, should be empty.
+## Tests find command with --older-than set to 1day, should be empty.
 function test_find_empty() {
     show "${FUNCNAME[0]}"
 
@@ -481,11 +519,11 @@ function test_find_empty() {
     assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd mb "${SERVER_ALIAS}/${bucket_name}"
     assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd mirror "$DATA_DIR" "${SERVER_ALIAS}/${bucket_name}"
 
-    # find --older 1 day should be empty, so we compare with empty string.
-    diff -bB <(echo "") <("${MC_CMD[@]}" --json find "${SERVER_ALIAS}/${bucket_name}" --older 1d | jq -r .key | sed "s/${SERVER_ALIAS}\/${bucket_name}\///g") >/dev/null 2>&1
+    # find --older-than 1 day should be empty, so we compare with empty string.
+    diff -bB <(echo "") <("${MC_CMD[@]}" --json find "${SERVER_ALIAS}/${bucket_name}" --older-than 1d | jq -r .key | sed "s/${SERVER_ALIAS}\/${bucket_name}\///g") >/dev/null 2>&1
     assert_success "$start_time" "${FUNCNAME[0]}" show_on_failure $? "mirror and list differs"
 
-    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rm --force --recursive "${SERVER_ALIAS}/${bucket_name}"
+    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rb --force "${SERVER_ALIAS}/${bucket_name}"
 
     log_success "$start_time" "${FUNCNAME[0]}"
 }
@@ -502,7 +540,7 @@ function test_find() {
     diff -bB <(ls "$DATA_DIR") <("${MC_CMD[@]}" --json find "${SERVER_ALIAS}/${bucket_name}/" | jq -r .key | sed "s/${SERVER_ALIAS}\/${bucket_name}\///g") >/dev/null 2>&1
     assert_success "$start_time" "${FUNCNAME[0]}" show_on_failure $? "mirror and list differs"
 
-    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rm --force --recursive "${SERVER_ALIAS}/${bucket_name}"
+    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rb --force "${SERVER_ALIAS}/${bucket_name}"
 
     log_success "$start_time" "${FUNCNAME[0]}"
 }
@@ -548,6 +586,8 @@ function test_watch_object()
     fi
 
     kill "$watch_cmd_pid"
+
+    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rb --force "${SERVER_ALIAS}/${bucket_name}"
 
     log_success "$start_time" "${FUNCNAME[0]}"
 }
@@ -722,10 +762,10 @@ function test_mirror_with_sse()
 
     assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd mb "${SERVER_ALIAS}/${bucket_name}"
     assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd mirror --encrypt-key "${cli_flag}" "$DATA_DIR" "${SERVER_ALIAS}/${bucket_name}"
-    diff -bB <(ls "$DATA_DIR") <("${MC_CMD[@]}" --json ls "${SERVER_ALIAS}/${bucket_name}" | jq -r .key) >/dev/null 2>&1
+    diff -bB <(ls "$DATA_DIR") <("${MC_CMD[@]}" --json ls "${SERVER_ALIAS}/${bucket_name}/" | jq -r .key) >/dev/null 2>&1
     assert_success "$start_time" "${FUNCNAME[0]}" show_on_failure $? "mirror and list differs"
-    # remove recursively with correct encryption key
-    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rm --force --recursive --encrypt-key "${cli_flag}" "${SERVER_ALIAS}/${bucket_name}"
+    # Remove the test bucket with its contents
+    assert_success "$start_time" "${FUNCNAME[0]}" mc_cmd rb --force "${SERVER_ALIAS}/${bucket_name}"
 
     log_success "$start_time" "${FUNCNAME[0]}"
 }
@@ -782,11 +822,12 @@ function run_test()
     test_make_bucket_error
 
     setup
-
     test_put_object
     test_put_object_error
+    test_put_object_0byte
     test_put_object_with_storage_class
     test_put_object_with_storage_class_error
+    test_put_object_with_metadata
     test_put_object_multipart
     test_get_object
     test_get_object_multipart
@@ -845,7 +886,11 @@ function __init__()
     fi
 
     mkdir -p "$MC_CONFIG_DIR"
-    MC_CMD=( "${MC}" --config-folder "$MC_CONFIG_DIR" --quiet --no-color )
+    MC_CMD=( "${MC}" --config-dir "$MC_CONFIG_DIR" --quiet --no-color )
+
+    if [ ! -e "$FILE_0_B" ]; then
+        base64 /dev/urandom | head -c 0 >"$FILE_0_B"
+    fi
 
     if [ ! -e "$FILE_1_MB" ]; then
         base64 /dev/urandom | head -c 1048576 >"$FILE_1_MB"
@@ -857,6 +902,12 @@ function __init__()
 
     set -E
     set -o pipefail
+
+    FILE_0_B_MD5SUM="$(get_md5sum "$FILE_0_B")"
+    if [ $? -ne 0 ]; then
+        echo "unable to get md5sum of $FILE_0_B"
+        exit 1
+    fi
 
     FILE_1_MB_MD5SUM="$(get_md5sum "$FILE_1_MB")"
     if [ $? -ne 0 ]; then

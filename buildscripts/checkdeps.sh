@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Minio Client, (C) 2015, 2016, 2017 Minio, Inc.
+# MinIO Client, (C) 2015, 2016, 2017, 2018, 2019 MinIO, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,13 +15,16 @@
 # limitations under the License.
 #
 
+# shellcheck source=buildscripts/build.env
+. "$(pwd)/buildscripts/build.env"
+
 _init() {
 
     shopt -s extglob
 
     ## Minimum required versions for build dependencies
     GIT_VERSION="1.0"
-    GO_VERSION="1.10.1"
+    GO_VERSION="1.12"
     OSX_VERSION="10.8"
     KNAME=$(uname -s)
     ARCH=$(uname -m)
@@ -34,7 +37,7 @@ _init() {
 
 ## FIXME:
 ## In OSX, 'readlink -f' option does not exist, hence
-## we have our own readlink -f behaviour here.
+## we have our own readlink -f behavior here.
 ## Once OSX has the option, below function is good enough.
 ##
 ## readlink() {
@@ -60,31 +63,6 @@ readlink() {
     PHYS_DIR=`pwd -P`
     RESULT=$PHYS_DIR/$TARGET_FILE
     echo $RESULT
-}
-
-## FIXME:
-## In OSX, 'sort -V' option does not exist, hence
-## we have our own version compare function.
-## Once OSX has the option, below function is good enough.
-##
-## check_minimum_version() {
-##     versions=($(echo -e "$1\n$2" | sort -V))
-##     return [ "$1" == "${versions[0]}" ]
-## }
-##
-check_minimum_version() {
-    IFS='.' read -r -a varray1 <<< "$1"
-    IFS='.' read -r -a varray2 <<< "$2"
-
-    for i in "${!varray1[@]}"; do
-        if [[ ${varray1[i]} -lt ${varray2[i]} ]]; then
-            return 0
-        elif [[ ${varray1[i]} -gt ${varray2[i]} ]]; then
-            return 1
-        fi
-    done
-
-    return 0
 }
 
 assert_is_supported_arch() {
@@ -119,7 +97,7 @@ assert_is_supported_os() {
 
 assert_check_golang_env() {
     if ! which go >/dev/null 2>&1; then
-        echo "Cannot find go binary in your PATH configuration, please refer to Go installation document at https://docs.minio.io/docs/how-to-install-golang"
+        echo "Cannot find go binary in your PATH configuration, please refer to Go installation document at https://docs.min.io/docs/how-to-install-golang"
         exit 1
     fi
 

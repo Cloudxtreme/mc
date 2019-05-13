@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2014, 2015 Minio, Inc.
+ * MinIO Client (C) 2014, 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,9 @@
 package cmd
 
 import (
-	"encoding/json"
-
 	"github.com/fatih/color"
 	"github.com/minio/cli"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 )
@@ -30,19 +29,19 @@ var (
 		cli.StringFlag{
 			Name:  "region",
 			Value: "us-east-1",
-			Usage: "Specify bucket region. Defaults to `us-east-1`.",
+			Usage: "specify bucket region; defaults to 'us-east-1'",
 		},
 		cli.BoolFlag{
 			Name:  "ignore-existing, p",
-			Usage: "Ignore if bucket/directory already exists",
+			Usage: "ignore if bucket/directory already exists",
 		},
 	}
 )
 
-// make a bucket or folder.
+// make a bucket.
 var mbCmd = cli.Command{
 	Name:   "mb",
-	Usage:  "Make a bucket or a folder.",
+	Usage:  "make a bucket",
 	Action: mainMakeBucket,
 	Before: setGlobalsFromContext,
 	Flags:  append(mbFlags, globalFlags...),
@@ -88,7 +87,7 @@ func (s makeBucketMessage) String() string {
 
 // JSON jsonified make bucket message.
 func (s makeBucketMessage) JSON() string {
-	makeBucketJSONBytes, e := json.Marshal(s)
+	makeBucketJSONBytes, e := json.MarshalIndent(s, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 
 	return string(makeBucketJSONBytes)

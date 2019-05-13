@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2016 Minio, Inc.
+ * MinIO Client (C) 2016 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -66,9 +66,10 @@ func TestValidSecretKeys(t *testing.T) {
 
 // Tests valid and invalid access keys.
 func TestValidAccessKeys(t *testing.T) {
-	equalAssert(isValidAccessKey("aaa"), false, t)
+	equalAssert(isValidAccessKey("aa"), false, t)
 
 	equalAssert(isValidAccessKey(""), true, t)
+	equalAssert(isValidAccessKey("adm"), true, t)
 	equalAssert(isValidAccessKey("admin"), true, t)
 	equalAssert(isValidAccessKey("$$%%%%%3333"), true, t)
 	equalAssert(isValidAccessKey("c67W2-r4MAyAYScRl"), true, t)

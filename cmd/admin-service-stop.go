@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2018 Minio, Inc.
+ * MinIO Client (C) 2018 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,9 @@
 package cmd
 
 import (
-	"encoding/json"
-
 	"github.com/fatih/color"
 	"github.com/minio/cli"
+	json "github.com/minio/mc/pkg/colorjson"
 	"github.com/minio/mc/pkg/console"
 	"github.com/minio/mc/pkg/probe"
 	"github.com/minio/minio/pkg/madmin"
@@ -28,7 +27,7 @@ import (
 
 var adminServiceStopCmd = cli.Command{
 	Name:   "stop",
-	Usage:  "Stop Minio server",
+	Usage:  "stop MinIO server",
 	Action: mainAdminServiceStop,
 	Before: setGlobalsFromContext,
 	Flags:  globalFlags,
@@ -42,7 +41,7 @@ FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}
 EXAMPLES:
-    1. Stop Minio server represented by its alias 'play'.
+    1. Stop MinIO server represented by its alias 'play'.
        $ {{.HelpName}} play/
 
 `,
@@ -61,7 +60,7 @@ func (s serviceStopMessage) String() string {
 
 // JSON jsonified make bucket message.
 func (s serviceStopMessage) JSON() string {
-	serviceStopJSONBytes, e := json.Marshal(s)
+	serviceStopJSONBytes, e := json.MarshalIndent(s, "", " ")
 	fatalIf(probe.NewError(e), "Unable to marshal into JSON.")
 
 	return string(serviceStopJSONBytes)
@@ -89,7 +88,7 @@ func mainAdminServiceStop(ctx *cli.Context) error {
 	client, err := newAdminClient(aliasedURL)
 	fatalIf(err, "Cannot get a configured admin connection.")
 
-	// Stop the specified Minio server
+	// Stop the specified MinIO server
 	pErr := client.ServiceSendAction(madmin.ServiceActionValueStop)
 	fatalIf(probe.NewError(pErr), "Cannot stop server.")
 

@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2017 Minio, Inc.
+ * MinIO Client (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,20 +30,21 @@ func (s *TestSuite) TestParseStat(c *C) {
 		content     clientContent
 		targetAlias string
 	}{
-		{clientContent{URL: *newClientURL("https://play.minio.io:9000/abc"), Size: 0, Time: localTime, Type: os.ModeDir, ETag: "blahblah", Metadata: map[string]string{"cusom-key": "custom-value"}, EncryptionHeaders: map[string]string{}},
+		{clientContent{URL: *newClientURL("https://play.min.io:9000/abc"), Size: 0, Time: localTime, Type: os.ModeDir, ETag: "blahblah", Metadata: map[string]string{"cusom-key": "custom-value"}, EncryptionHeaders: map[string]string{}, Expires: time.Now()},
 			"play"},
-		{clientContent{URL: *newClientURL("https://play.minio.io:9000/testbucket"), Size: 500, Time: localTime, Type: os.ModeDir, ETag: "blahblah", Metadata: map[string]string{"cusom-key": "custom-value"}, EncryptionHeaders: map[string]string{}},
+		{clientContent{URL: *newClientURL("https://play.min.io:9000/testbucket"), Size: 500, Time: localTime, Type: os.ModeDir, ETag: "blahblah", Metadata: map[string]string{"cusom-key": "custom-value"}, EncryptionHeaders: map[string]string{}, Expires: time.Unix(0, 0).UTC()},
 			"play"},
 		{clientContent{URL: *newClientURL("https://s3.amazonaws.com/yrdy"), Size: 0, Time: localTime, Type: 0644, ETag: "abcdefasaas", Metadata: map[string]string{}, EncryptionHeaders: map[string]string{}},
 			"s3"},
-		{clientContent{URL: *newClientURL("https://play.minio.io:9000/yrdy"), Size: 10000, Time: localTime, Type: 0644, ETag: "blahblah", Metadata: map[string]string{"cusom-key": "custom-value"}, EncryptionHeaders: map[string]string{"X-Amz-Iv": "test", "X-Amz-Matdesc": "abcd"}},
+		{clientContent{URL: *newClientURL("https://play.min.io:9000/yrdy"), Size: 10000, Time: localTime, Type: 0644, ETag: "blahblah", Metadata: map[string]string{"cusom-key": "custom-value"}, EncryptionHeaders: map[string]string{"X-Amz-Iv": "test", "X-Amz-Matdesc": "abcd"}},
 			"play"},
 	}
 	for _, testCase := range testCases {
-		statMsg := parseStat(testCase.targetAlias, &testCase.content)
+		statMsg := parseStat(&testCase.content)
 		c.Assert(testCase.content.Metadata, DeepEquals, statMsg.Metadata)
 		c.Assert(testCase.content.EncryptionHeaders, DeepEquals, statMsg.EncryptionHeaders)
 		c.Assert(testCase.content.Size, Equals, statMsg.Size)
+		c.Assert(testCase.content.Expires, Equals, statMsg.Expires)
 		c.Log(statMsg.Type)
 		if testCase.content.Type.IsRegular() {
 			c.Assert(statMsg.Type, Equals, "file")

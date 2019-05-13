@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2015, 2016, 2017 Minio, Inc.
+ * MinIO Client (C) 2015, 2016, 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,8 +28,10 @@ import (
 	"time"
 
 	"github.com/minio/minio-go"
+	"github.com/minio/minio-go/pkg/encrypt"
 
 	"github.com/minio/mc/pkg/console"
+	"github.com/minio/mc/pkg/ioutils"
 	"github.com/minio/mc/pkg/probe"
 )
 
@@ -37,7 +39,7 @@ func isErrIgnored(err *probe.Error) (ignored bool) {
 	// For all non critical errors we can continue for the remaining files.
 	switch err.ToGoError().(type) {
 	// Handle these specifically for filesystem related errors.
-	case BrokenSymlink, TooManyLevelsSymlink, PathNotFound, PathInsufficientPermission:
+	case BrokenSymlink, TooManyLevelsSymlink, PathNotFound:
 		ignored = true
 	// Handle these specifically for object storage related errors.
 	case BucketNameEmpty, ObjectMissing, ObjectAlreadyExists:
@@ -161,15 +163,27 @@ func lineTrunc(content string, maxLen int) string {
 }
 
 // isOlder returns true if the passed object is older than olderRef
-func isOlder(c *clientContent, olderRef int) bool {
-	objectAge := UTCNow().Sub(c.Time)
-	return objectAge < (time.Duration(olderRef) * Day)
+func isOlder(ti time.Time, olderRef string) bool {
+	objectAge := UTCNow().Sub(ti)
+	var e error
+	var olderThan time.Duration
+	if olderRef != "" {
+		olderThan, e = ioutils.ParseDurationTime(olderRef)
+		fatalIf(probe.NewError(e), "Unable to parse olderThan=`"+olderRef+"`.")
+	}
+	return objectAge < olderThan
 }
 
 // isNewer returns true if the passed object is newer than newerRef
-func isNewer(c *clientContent, newerRef int) bool {
-	objectAge := UTCNow().Sub(c.Time)
-	return objectAge > (time.Duration(newerRef) * Day)
+func isNewer(ti time.Time, newerRef string) bool {
+	objectAge := UTCNow().Sub(ti)
+	var e error
+	var newerThan time.Duration
+	if newerRef != "" {
+		newerThan, e = ioutils.ParseDurationTime(newerRef)
+		fatalIf(probe.NewError(e), "Unable to parse newerThan=`"+newerRef+"`.")
+	}
+	return objectAge >= newerThan
 }
 
 // getLookupType returns the minio.BucketLookupType for lookup
@@ -187,23 +201,29 @@ func getLookupType(l string) minio.BucketLookupType {
 
 // struct representing object prefix and sse keys association.
 type prefixSSEPair struct {
-	prefix string
-	sseKey string
+	Prefix string
+	SSE    encrypt.ServerSide
 }
 
 // parse and validate encryption keys entered on command line
-func parseAndValidateEncryptionKeys(sseKeys string) (encMap map[string][]prefixSSEPair, err *probe.Error) {
-	if sseKeys == "" {
-		return
-	}
+func parseAndValidateEncryptionKeys(sseKeys string, sse string) (encMap map[string][]prefixSSEPair, err *probe.Error) {
 	encMap, err = parseEncryptionKeys(sseKeys)
 	if err != nil {
 		return nil, err
 	}
+	if sse != "" {
+		for _, prefix := range strings.Split(sse, ",") {
+			alias, _ := url2Alias(prefix)
+			encMap[alias] = append(encMap[alias], prefixSSEPair{
+				Prefix: prefix,
+				SSE:    encrypt.NewSSE(),
+			})
+		}
+	}
 	for alias, ps := range encMap {
 		if hostCfg := mustGetHostConfig(alias); hostCfg == nil {
 			for _, p := range ps {
-				return nil, probe.NewError(errors.New("sse-c prefix " + p.prefix + " has invalid alias"))
+				return nil, probe.NewError(errors.New("SSE prefix " + p.Prefix + " has invalid alias"))
 			}
 		}
 	}
@@ -218,39 +238,47 @@ func parseEncryptionKeys(sseKeys string) (encMap map[string][]prefixSSEPair, err
 		return
 	}
 	prefix := ""
-	ssekey := ""
 	index := 0 // start index of prefix
 	vs := 0    // start index of sse-c key
 	sseKeyLen := 32
 	delim := 1
 	k := len(sseKeys)
 	for index < k {
-		e := strings.Index(sseKeys[index:], "=")
-		if e == -1 {
-			return nil, probe.NewError(errors.New("sse-c prefix should be of the form prefix1=key1,... "))
+		i := strings.Index(sseKeys[index:], "=")
+		if i == -1 {
+			return nil, probe.NewError(errors.New("SSE-C prefix should be of the form prefix1=key1,... "))
 		}
-		prefix = sseKeys[index : index+e]
+		prefix = sseKeys[index : index+i]
 		alias, _ := url2Alias(prefix)
-		vs = e + 1 + index
+		vs = i + 1 + index
 		if vs+32 > k {
-			return nil, probe.NewError(errors.New("sse-c key should be 32 bytes long"))
+			return nil, probe.NewError(errors.New("SSE-C key should be 32 bytes long"))
 		}
-		ssekey = sseKeys[vs : vs+sseKeyLen]
 		if (vs+sseKeyLen < k) && sseKeys[vs+sseKeyLen] != ',' {
-			return nil, probe.NewError(errors.New("sse-c prefix=secret should be delimited by , and secret should be 32 bytes long"))
+			return nil, probe.NewError(errors.New("SSE-C prefix=secret should be delimited by , and secret should be 32 bytes long"))
 		}
+		sseKey := sseKeys[vs : vs+sseKeyLen]
 		if _, ok := encMap[alias]; !ok {
 			encMap[alias] = make([]prefixSSEPair, 0)
 		}
-		ps := prefixSSEPair{prefix: prefix, sseKey: ssekey}
-		encMap[alias] = append(encMap[alias], ps)
+		sse, e := encrypt.NewSSEC([]byte(sseKey))
+		if e != nil {
+			return nil, probe.NewError(e)
+		}
+		encMap[alias] = append(encMap[alias], prefixSSEPair{
+			Prefix: prefix,
+			SSE:    sse,
+		})
 		// advance index sseKeyLen + delim bytes for the next key start
 		index = vs + sseKeyLen + delim
 	}
-	// sort encryption keys in descending order of prefix length
+
+	// Sort encryption keys in descending order of prefix length
 	for _, encKeys := range encMap {
 		sort.Sort(byPrefixLength(encKeys))
 	}
+
+	// Success.
 	return encMap, nil
 }
 
@@ -259,18 +287,18 @@ type byPrefixLength []prefixSSEPair
 
 func (p byPrefixLength) Len() int { return len(p) }
 func (p byPrefixLength) Less(i, j int) bool {
-	return len(p[i].prefix) > len(p[j].prefix)
+	return len(p[i].Prefix) > len(p[j].Prefix)
 }
 func (p byPrefixLength) Swap(i, j int) { p[i], p[j] = p[j], p[i] }
 
 // get SSE Key if object prefix matches with given resource.
-func getSSEKey(resource string, encKeys []prefixSSEPair) string {
+func getSSE(resource string, encKeys []prefixSSEPair) encrypt.ServerSide {
 	for _, k := range encKeys {
-		if strings.HasPrefix(resource, k.prefix) {
-			return k.sseKey
+		if strings.HasPrefix(resource, k.Prefix) {
+			return k.SSE
 		}
 	}
-	return ""
+	return nil
 }
 
 // Return true if target url is a part of a source url such as:

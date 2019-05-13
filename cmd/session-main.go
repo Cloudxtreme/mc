@@ -1,5 +1,5 @@
 /*
- * Minio Client, (C) 2015 Minio, Inc.
+ * MinIO Client, (C) 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,10 +24,10 @@ var (
 	sessionFlags = []cli.Flag{}
 )
 
-// Manage sessions for cp and mirror.
+// Resume interrupted operations.
 var sessionCmd = cli.Command{
 	Name:            "session",
-	Usage:           "Manage saved sessions for cp command.",
+	Usage:           "resume interrupted operations",
 	Action:          mainSession,
 	Flags:           append(sessionFlags, globalFlags...),
 	Before:          setGlobalsFromContext,

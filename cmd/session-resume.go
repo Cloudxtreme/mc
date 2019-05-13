@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2017 Minio, Inc.
+ * MinIO Client (C) 2017 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ import (
 
 var sessionResume = cli.Command{
 	Name:   "resume",
-	Usage:  "Resume a previously saved session.",
+	Usage:  "resume interrupted session",
 	Action: mainSessionResume,
 	Flags:  globalFlags,
 	Before: setGlobalsFromContext,
@@ -41,13 +41,13 @@ USAGE:
   {{.HelpName}} SESSION-ID
 
 SESSION-ID:
-  SESSION - Session is your previously saved $SESSION-ID
+  SESSION - Session is your previously saved SESSION-ID
 
 FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}
 EXAMPLES:
-  1. Resume session. 
+  1. Resume session.
      $ {{.HelpName}} ygVIpSJs
 `,
 }
@@ -63,7 +63,10 @@ func (b bySessionWhen) Less(i, j int) bool { return b[i].Header.When.Before(b[j]
 func sessionExecute(s *sessionV8) {
 	switch s.Header.CommandType {
 	case "cp":
-		doCopySession(s)
+		sseKeys := s.Header.CommandStringFlags["encrypt-key"]
+		sseServer := s.Header.CommandStringFlags["encrypt"]
+		encKeyDB, _ := parseAndValidateEncryptionKeys(sseKeys, sseServer)
+		doCopySession(s, encKeyDB)
 	}
 }
 

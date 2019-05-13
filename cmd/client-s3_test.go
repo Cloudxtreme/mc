@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2015 Minio, Inc.
+ * MinIO Client (C) 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 
+	minio "github.com/minio/minio-go"
 	. "gopkg.in/check.v1"
 )
 
@@ -222,16 +223,41 @@ func (s *TestSuite) TestObjectOperations(c *C) {
 	reader = bytes.NewReader(object.data)
 	n, err := s3c.Put(context.Background(), reader, int64(len(object.data)), map[string]string{
 		"Content-Type": "application/octet-stream",
-	}, nil, "")
+	}, nil, nil)
 	c.Assert(err, IsNil)
 	c.Assert(n, Equals, int64(len(object.data)))
 
-	reader, err = s3c.Get("")
+	reader, err = s3c.Get(nil)
 	c.Assert(err, IsNil)
 	var buffer bytes.Buffer
 	{
 		_, err := io.Copy(&buffer, reader)
 		c.Assert(err, IsNil)
 		c.Assert(buffer.Bytes(), DeepEquals, object.data)
+	}
+}
+
+var testSelectCompressionTypeCases = []struct {
+	opts            SelectObjectOpts
+	object          string
+	compressionType minio.SelectCompressionType
+}{
+	{SelectObjectOpts{CompressionType: minio.SelectCompressionNONE}, "a.gzip", minio.SelectCompressionNONE},
+	{SelectObjectOpts{CompressionType: minio.SelectCompressionBZIP}, "a.gz", minio.SelectCompressionBZIP},
+	{SelectObjectOpts{}, "t.parquet", minio.SelectCompressionNONE},
+	{SelectObjectOpts{}, "x.csv.gz", minio.SelectCompressionGZIP},
+	{SelectObjectOpts{}, "x.json.bz2", minio.SelectCompressionBZIP},
+	{SelectObjectOpts{}, "b.gz", minio.SelectCompressionGZIP},
+	{SelectObjectOpts{}, "k.bz2", minio.SelectCompressionBZIP},
+	{SelectObjectOpts{}, "a.csv", minio.SelectCompressionNONE},
+	{SelectObjectOpts{}, "a.json", minio.SelectCompressionNONE},
+}
+
+// TestSelectCompressionType - tests compression type returned
+// by method
+func (s *TestSuite) TestSelectCompressionType(c *C) {
+	for _, test := range testSelectCompressionTypeCases {
+		cType := selectCompressionType(test.opts, test.object)
+		c.Assert(cType, DeepEquals, test.compressionType)
 	}
 }

@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2015 Minio, Inc.
+ * MinIO Client (C) 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,22 +24,34 @@ import (
 	"regexp"
 	"strings"
 
+	"golang.org/x/net/http/httpguts"
+	"gopkg.in/h2non/filetype.v1"
+
 	"github.com/minio/cli"
 	"github.com/minio/mc/pkg/probe"
-	"golang.org/x/net/http/httpguts"
+	"github.com/minio/minio-go/pkg/encrypt"
 )
 
 // parse and return encryption key pairs per alias.
 func getEncKeys(ctx *cli.Context) (map[string][]prefixSSEPair, *probe.Error) {
-	sseKeys := os.Getenv("MC_ENCRYPT_KEY")
-	if key := ctx.String("encrypt-key"); key != "" {
-		sseKeys = key
+	sseServer := os.Getenv("MC_ENCRYPT")
+	if prefix := ctx.String("encrypt"); prefix != "" {
+		sseServer = prefix
 	}
 
-	encKeyDB, err := parseAndValidateEncryptionKeys(sseKeys)
+	sseKeys := os.Getenv("MC_ENCRYPT_KEY")
+	if keyPrefix := ctx.String("encrypt-key"); keyPrefix != "" {
+		if sseServer != "" && strings.Contains(keyPrefix, sseServer) {
+			return nil, errConflictSSE(sseServer, keyPrefix).Trace(ctx.Args()...)
+		}
+		sseKeys = keyPrefix
+	}
+
+	encKeyDB, err := parseAndValidateEncryptionKeys(sseKeys, sseServer)
 	if err != nil {
 		return nil, err.Trace(sseKeys)
 	}
+
 	return encKeyDB, nil
 }
 
@@ -82,30 +94,41 @@ func isAliasURLDir(aliasURL string, keys map[string][]prefixSSEPair) bool {
 	return strings.HasSuffix(pathURL, "/")
 }
 
+// getSourceStreamMetadataFromURL gets a reader from URL.
+func getSourceStreamMetadataFromURL(urlStr string, encKeyDB map[string][]prefixSSEPair) (reader io.ReadCloser,
+	metadata map[string]string, err *probe.Error) {
+	alias, urlStrFull, _, err := expandAlias(urlStr)
+	if err != nil {
+		return nil, nil, err.Trace(urlStr)
+	}
+	sseKey := getSSE(urlStr, encKeyDB[alias])
+	return getSourceStream(alias, urlStrFull, true, sseKey)
+}
+
 // getSourceStreamFromURL gets a reader from URL.
-func getSourceStreamFromURL(urlStr string, encKeyDB map[string][]prefixSSEPair) (reader io.Reader, err *probe.Error) {
+func getSourceStreamFromURL(urlStr string, encKeyDB map[string][]prefixSSEPair) (reader io.ReadCloser, err *probe.Error) {
 	alias, urlStrFull, _, err := expandAlias(urlStr)
 	if err != nil {
 		return nil, err.Trace(urlStr)
 	}
-	sseKey := getSSEKey(urlStr, encKeyDB[alias])
-	reader, _, err = getSourceStream(alias, urlStrFull, false, sseKey)
+	sse := getSSE(urlStr, encKeyDB[alias])
+	reader, _, err = getSourceStream(alias, urlStrFull, false, sse)
 	return reader, err
 }
 
 // getSourceStream gets a reader from URL.
-func getSourceStream(alias string, urlStr string, fetchStat bool, sseKey string) (reader io.Reader, metadata map[string]string, err *probe.Error) {
+func getSourceStream(alias string, urlStr string, fetchStat bool, sse encrypt.ServerSide) (reader io.ReadCloser, metadata map[string]string, err *probe.Error) {
 	sourceClnt, err := newClientFromAlias(alias, urlStr)
 	if err != nil {
 		return nil, nil, err.Trace(alias, urlStr)
 	}
-	reader, err = sourceClnt.Get(sseKey)
+	reader, err = sourceClnt.Get(sse)
 	if err != nil {
 		return nil, nil, err.Trace(alias, urlStr)
 	}
-	metadata = map[string]string{}
+	metadata = make(map[string]string)
 	if fetchStat {
-		st, err := sourceClnt.Stat(false, true, sseKey)
+		st, err := sourceClnt.Stat(false, true, sse)
 		if err != nil {
 			return nil, nil, err.Trace(alias, urlStr)
 		}
@@ -115,17 +138,42 @@ func getSourceStream(alias string, urlStr string, fetchStat bool, sseKey string)
 				metadata[k] = v
 			}
 		}
+		// If our reader is a seeker try to detect content-type further.
+		if s, ok := reader.(io.ReadSeeker); ok {
+			// All unrecognized files have `application/octet-stream`
+			// So we continue our detection process.
+			if ctype := metadata["Content-Type"]; ctype == "application/octet-stream" {
+				// Read a chunk to decide between utf-8 text and binary
+				var buf [512]byte
+				n, _ := io.ReadFull(reader, buf[:])
+				if n > 0 {
+					kind, e := filetype.Match(buf[:n])
+					if e != nil {
+						return nil, nil, probe.NewError(e)
+					}
+					// rewind to output whole file
+					if _, e := s.Seek(0, io.SeekStart); e != nil {
+						return nil, nil, probe.NewError(e)
+					}
+					ctype = kind.MIME.Value
+					if ctype == "" {
+						ctype = "application/octet-stream"
+					}
+					metadata["Content-Type"] = ctype
+				}
+			}
+		}
 	}
 	return reader, metadata, nil
 }
 
 // putTargetStream writes to URL from Reader.
-func putTargetStream(ctx context.Context, alias string, urlStr string, reader io.Reader, size int64, metadata map[string]string, progress io.Reader, sseKey string) (int64, *probe.Error) {
+func putTargetStream(ctx context.Context, alias string, urlStr string, reader io.Reader, size int64, metadata map[string]string, progress io.Reader, sse encrypt.ServerSide) (int64, *probe.Error) {
 	targetClnt, err := newClientFromAlias(alias, urlStr)
 	if err != nil {
 		return 0, err.Trace(alias, urlStr)
 	}
-	n, err := targetClnt.Put(ctx, reader, size, metadata, progress, sseKey)
+	n, err := targetClnt.Put(ctx, reader, size, metadata, progress, sse)
 	if err != nil {
 		return n, err.Trace(alias, urlStr)
 	}
@@ -133,7 +181,7 @@ func putTargetStream(ctx context.Context, alias string, urlStr string, reader io
 }
 
 // putTargetStreamWithURL writes to URL from reader. If length=-1, read until EOF.
-func putTargetStreamWithURL(urlStr string, reader io.Reader, size int64, sseKey string) (int64, *probe.Error) {
+func putTargetStreamWithURL(urlStr string, reader io.Reader, size int64, sse encrypt.ServerSide) (int64, *probe.Error) {
 	alias, urlStrFull, _, err := expandAlias(urlStr)
 	if err != nil {
 		return 0, err.Trace(alias, urlStr)
@@ -142,56 +190,101 @@ func putTargetStreamWithURL(urlStr string, reader io.Reader, size int64, sseKey 
 	metadata := map[string]string{
 		"Content-Type": contentType,
 	}
-	return putTargetStream(context.Background(), alias, urlStrFull, reader, size, metadata, nil, sseKey)
+	return putTargetStream(context.Background(), alias, urlStrFull, reader, size, metadata, nil, sse)
 }
 
 // copySourceToTargetURL copies to targetURL from source.
-func copySourceToTargetURL(alias string, urlStr string, source string, size int64, progress io.Reader, srcSSEKey, tgtSSEKey string) *probe.Error {
+func copySourceToTargetURL(alias string, urlStr string, source string, size int64, progress io.Reader, srcSSE, tgtSSE encrypt.ServerSide, metadata map[string]string) *probe.Error {
 	targetClnt, err := newClientFromAlias(alias, urlStr)
 	if err != nil {
 		return err.Trace(alias, urlStr)
 	}
-	err = targetClnt.Copy(source, size, progress, srcSSEKey, tgtSSEKey)
+	err = targetClnt.Copy(source, size, progress, srcSSE, tgtSSE, metadata)
 	if err != nil {
 		return err.Trace(alias, urlStr)
 	}
 	return nil
 }
 
+// createUserMetadata - returns a map of user defined function
+// by combining the usermetadata of object and  values passed by attr keyword
+func createUserMetadata(sourceAlias, sourceURLStr string, srcSSE encrypt.ServerSide, urls URLs) (map[string]string, *probe.Error) {
+	metadata := make(map[string]string)
+	sourceClnt, err := newClientFromAlias(sourceAlias, sourceURLStr)
+	if err != nil {
+		return nil, err.Trace(sourceAlias, sourceURLStr)
+	}
+	st, err := sourceClnt.Stat(false, true, srcSSE)
+	if err != nil {
+		return nil, err.Trace(sourceAlias, sourceURLStr)
+	}
+	for k, v := range st.Metadata {
+		if httpguts.ValidHeaderFieldName(k) && strings.HasPrefix(k, "X-Amz-Meta-") &&
+			httpguts.ValidHeaderFieldValue(v) {
+			metadata[k] = v
+		}
+	}
+
+	for k, v := range urls.TargetContent.UserMetadata {
+		metadata[k] = v
+	}
+	return metadata, nil
+}
+
 // uploadSourceToTargetURL - uploads to targetURL from source.
 // optionally optimizes copy for object sizes <= 5GiB by using
 // server side copy operation.
-func uploadSourceToTargetURL(ctx context.Context, urls URLs, progress io.Reader) URLs {
+func uploadSourceToTargetURL(ctx context.Context, urls URLs, progress io.Reader, encKeyDB map[string][]prefixSSEPair) URLs {
 	sourceAlias := urls.SourceAlias
 	sourceURL := urls.SourceContent.URL
 	targetAlias := urls.TargetAlias
 	targetURL := urls.TargetContent.URL
 	length := urls.SourceContent.Size
+
+	sourcePath := filepath.ToSlash(filepath.Join(sourceAlias, urls.SourceContent.URL.Path))
+	targetPath := filepath.ToSlash(filepath.Join(targetAlias, urls.TargetContent.URL.Path))
+
+	srcSSE := getSSE(sourcePath, encKeyDB[sourceAlias])
+	tgtSSE := getSSE(targetPath, encKeyDB[targetAlias])
+
 	// Optimize for server side copy if the host is same.
 	if sourceAlias == targetAlias {
+
+		metadata, err := createUserMetadata(sourceAlias, sourceURL.String(), srcSSE, urls)
+		if err != nil {
+			return urls.WithError(err.Trace(sourceURL.String()))
+		}
+
 		sourcePath := filepath.ToSlash(sourceURL.Path)
-		err := copySourceToTargetURL(targetAlias, targetURL.String(), sourcePath, length, progress, urls.SrcSSEKey, urls.TgtSSEKey)
+		err = copySourceToTargetURL(targetAlias, targetURL.String(), sourcePath, length, progress, srcSSE, tgtSSE, metadata)
 		if err != nil {
 			return urls.WithError(err.Trace(sourceURL.String()))
 		}
 	} else {
+
 		// Proceed with regular stream copy.
-		reader, metadata, err := getSourceStream(sourceAlias, sourceURL.String(), true, urls.SrcSSEKey)
+		reader, metadata, err := getSourceStream(sourceAlias, sourceURL.String(), true, srcSSE)
 		if err != nil {
 			return urls.WithError(err.Trace(sourceURL.String()))
 		}
+		defer reader.Close()
 		// Get metadata from target content as well
 		if urls.TargetContent.Metadata != nil {
 			for k, v := range urls.TargetContent.Metadata {
 				metadata[k] = v
 			}
 		}
-		if urls.SrcSSEKey != "" {
+		// Get userMetadata from target content as well
+		if urls.TargetContent.UserMetadata != nil {
+			for k, v := range urls.TargetContent.UserMetadata {
+				metadata[k] = v
+			}
+		}
+		if srcSSE != nil {
 			delete(metadata, "X-Amz-Server-Side-Encryption-Customer-Algorithm")
 			delete(metadata, "X-Amz-Server-Side-Encryption-Customer-Key-Md5")
 		}
-
-		_, err = putTargetStream(ctx, targetAlias, targetURL.String(), reader, length, metadata, progress, urls.TgtSSEKey)
+		_, err = putTargetStream(ctx, targetAlias, targetURL.String(), reader, length, metadata, progress, tgtSSE)
 		if err != nil {
 			return urls.WithError(err.Trace(targetURL.String()))
 		}

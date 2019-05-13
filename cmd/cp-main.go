@@ -1,5 +1,5 @@
 /*
- * Minio Client (C) 2014, 2015 Minio, Inc.
+ * MinIO Client (C) 2014, 2015 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,34 +40,41 @@ var (
 	cpFlags = []cli.Flag{
 		cli.BoolFlag{
 			Name:  "recursive, r",
-			Usage: "Copy recursively.",
+			Usage: "copy recursively",
 		},
-		cli.IntFlag{
+		cli.StringFlag{
 			Name:  "older-than",
-			Usage: "Copy objects older than N days",
+			Usage: "copy objects older than L days, M hours and N minutes",
 		},
-		cli.IntFlag{
+		cli.StringFlag{
 			Name:  "newer-than",
-			Usage: "Copy objects newer than N days",
+			Usage: "copy objects newer than L days, M hours and N minutes",
 		},
 		cli.StringFlag{
 			Name:  "storage-class, sc",
-			Usage: "Set storage class for object",
+			Usage: "set storage class for new object(s) on target",
 		},
 		cli.StringFlag{
-			Name:  "encrypt-key",
-			Usage: "Encrypt/Decrypt objects (using server-side encryption)",
+			Name:  "encrypt",
+			Usage: "encrypt/decrypt objects (using server-side encryption with server managed keys)",
+		},
+		cli.StringFlag{
+			Name:  "attr",
+			Usage: "add custom metadata for the object",
 		},
 	}
 )
 
+// ErrInvalidMetadata reflects invalid metadata format
+var ErrInvalidMetadata = errors.New("specified metadata should be of form key1=value1,key2=value2,... and so on")
+
 // Copy command.
 var cpCmd = cli.Command{
 	Name:   "cp",
-	Usage:  "Copy files and objects.",
+	Usage:  "copy objects",
 	Action: mainCopy,
 	Before: setGlobalsFromContext,
-	Flags:  append(cpFlags, globalFlags...),
+	Flags:  append(append(cpFlags, ioFlags...), globalFlags...),
 	CustomHelpTemplate: `NAME:
   {{.HelpName}} - {{.Usage}}
 
@@ -76,28 +84,28 @@ USAGE:
 FLAGS:
   {{range .VisibleFlags}}{{.}}
   {{end}}
-
 ENVIRONMENT VARIABLES:
-   MC_ENCRYPT_KEY: List of comma delimited prefix=secret values
+   MC_ENCRYPT:      list of comma delimited prefixes
+   MC_ENCRYPT_KEY:  list of comma delimited prefix=secret values
 
 EXAMPLES:
    1. Copy a list of objects from local file system to Amazon S3 cloud storage.
       $ {{.HelpName}} Music/*.ogg s3/jukebox/
 
-   2. Copy a folder recursively from Minio cloud storage to Amazon S3 cloud storage.
+   2. Copy a folder recursively from MinIO cloud storage to Amazon S3 cloud storage.
       $ {{.HelpName}} --recursive play/mybucket/burningman2011/ s3/mybucket/
 
-   3. Copy multiple local folders recursively to Minio cloud storage.
+   3. Copy multiple local folders recursively to MinIO cloud storage.
       $ {{.HelpName}} --recursive backup/2014/ backup/2015/ play/archive/
 
    4. Copy a bucket recursively from aliased Amazon S3 cloud storage to local filesystem on Windows.
       $ {{.HelpName}} --recursive s3\documents\2014\ C:\Backups\2014
 
-   5. Copy files older than 7 days from Minio cloud storage to Amazon S3 cloud storage.
-      $ {{.HelpName}} --older-than 7 play/mybucket/burningman2011/ s3/mybucket/
+   5. Copy files older than 7 days and 10 hours from MinIO cloud storage to Amazon S3 cloud storage.
+      $ {{.HelpName}} --older-than 7d10h play/mybucket/burningman2011/ s3/mybucket/
 
-   6. Copy files newer than 7 days from Minio cloud storage to a local path.
-      $ {{.HelpName}} --newer-than 7 play/mybucket/burningman2011/ ~/latest/
+   6. Copy files newer than 7 days and 10 hours from MinIO cloud storage to a local path.
+      $ {{.HelpName}} --newer-than 7d10h play/mybucket/burningman2011/ ~/latest/
 
    7. Copy an object with name containing unicode characters to Amazon S3 cloud storage.
       $ {{.HelpName}} 本語 s3/andoria/
@@ -105,9 +113,16 @@ EXAMPLES:
    8. Copy a local folder with space separated characters to Amazon S3 cloud storage.
       $ {{.HelpName}} --recursive 'workdir/documents/May 2014/' s3/miniocloud
 
-   9. Copy a folder with encrypted objects recursively from Amazon S3 to Minio cloud storage.
+   9. Copy a folder with encrypted objects recursively from Amazon S3 to MinIO cloud storage.
       $ {{.HelpName}} --recursive --encrypt-key "s3/documents/=32byteslongsecretkeymustbegiven1,myminio/documents/=32byteslongsecretkeymustbegiven2" s3/documents/ myminio/documents/
-`,
+
+  10. Copy a list of objects from local file system to MinIO cloud storage with specified metadata.
+			$ {{.HelpName}} --attr key1=value1,key2=value2 Music/*.mp4 play/mybucket/
+			
+	11. Copy a folder recursively from MinIO cloud storage to Amazon S3 cloud storage with specified metadata.
+			$ {{.HelpName}} --attr key1=value1,key2=value2 --recursive play/mybucket/burningman2011/ s3/mybucket/
+
+ `,
 }
 
 // copyMessage container for file copy messages
@@ -128,7 +143,7 @@ func (c copyMessage) String() string {
 // JSON jsonified copy message
 func (c copyMessage) JSON() string {
 	c.Status = "success"
-	copyMessageBytes, e := json.Marshal(c)
+	copyMessageBytes, e := json.MarshalIndent(c, "", " ")
 	fatalIf(probe.NewError(e), "Failed to marshal copy message.")
 
 	return string(copyMessageBytes)
@@ -168,7 +183,7 @@ type ProgressReader interface {
 }
 
 // doCopy - Copy a singe file from source to destination
-func doCopy(ctx context.Context, cpURLs URLs, pg ProgressReader) URLs {
+func doCopy(ctx context.Context, cpURLs URLs, pg ProgressReader, encKeyDB map[string][]prefixSSEPair) URLs {
 	if cpURLs.Error != nil {
 		cpURLs.Error = cpURLs.Error.Trace()
 		return cpURLs
@@ -193,7 +208,7 @@ func doCopy(ctx context.Context, cpURLs URLs, pg ProgressReader) URLs {
 			TotalSize:  cpURLs.TotalSize,
 		})
 	}
-	return uploadSourceToTargetURL(ctx, cpURLs, pg)
+	return uploadSourceToTargetURL(ctx, cpURLs, pg, encKeyDB)
 }
 
 // doCopyFake - Perform a fake copy to update the progress bar appropriately.
@@ -217,10 +232,11 @@ func doPrepareCopyURLs(session *sessionV8, trapCh <-chan bool, cancelCopy contex
 	// Access recursive flag inside the session header.
 	isRecursive := session.Header.CommandBoolFlags["recursive"]
 
-	olderThan := session.Header.CommandIntFlags["older-than"]
-	newerThan := session.Header.CommandIntFlags["newer-than"]
+	olderThan := session.Header.CommandStringFlags["older-than"]
+	newerThan := session.Header.CommandStringFlags["newer-than"]
 	encryptKeys := session.Header.CommandStringFlags["encrypt-key"]
-	encKeyDB, err := parseAndValidateEncryptionKeys(encryptKeys)
+	encrypt := session.Header.CommandStringFlags["encrypt"]
+	encKeyDB, err := parseAndValidateEncryptionKeys(encryptKeys, encrypt)
 	fatalIf(err, "Unable to parse encryption keys.")
 
 	// Create a session data file to store the processed URLs.
@@ -259,12 +275,12 @@ func doPrepareCopyURLs(session *sessionV8, trapCh <-chan bool, cancelCopy contex
 			}
 
 			// Skip objects older than --older-than parameter if specified
-			if olderThan > 0 && isOlder(cpURLs.SourceContent, olderThan) {
+			if olderThan != "" && isOlder(cpURLs.SourceContent.Time, olderThan) {
 				continue
 			}
 
 			// Skip objects newer than --newer-than parameter if specified
-			if newerThan > 0 && isNewer(cpURLs.SourceContent, newerThan) {
+			if newerThan != "" && isNewer(cpURLs.SourceContent.Time, newerThan) {
 				continue
 			}
 
@@ -290,7 +306,7 @@ func doPrepareCopyURLs(session *sessionV8, trapCh <-chan bool, cancelCopy contex
 	session.Save()
 }
 
-func doCopySession(session *sessionV8) error {
+func doCopySession(session *sessionV8, encKeyDB map[string][]prefixSSEPair) error {
 	trapCh := signalTrap(os.Interrupt, syscall.SIGTERM, syscall.SIGKILL)
 
 	ctx, cancelCopy := context.WithCancel(context.Background())
@@ -346,7 +362,8 @@ func doCopySession(session *sessionV8) error {
 				}
 
 				var cpURLs URLs
-				// Unmarshal copyURLs from each line.
+				// Unmarshal copyURLs from each line. This expects each line to be
+				// an entire JSON object.
 				if e := json.Unmarshal([]byte(urlScanner.Text()), &cpURLs); e != nil {
 					errorIf(probe.NewError(e), "Unable to unmarshal %s", urlScanner.Text())
 					continue
@@ -366,6 +383,19 @@ func doCopySession(session *sessionV8) error {
 					cpURLs.TargetContent.Metadata["X-Amz-Storage-Class"] = session.Header.CommandStringFlags["storage-class"]
 				}
 
+				//	metaMap, metaSet := session.Header.UserMetaData
+
+				// Check and handle metadata if passed in command line args
+
+				if len(session.Header.UserMetaData) != 0 {
+					if cpURLs.TargetContent.UserMetadata == nil {
+						cpURLs.TargetContent.UserMetadata = make(map[string]string)
+					}
+					for metaDataKey, metaDataVal := range session.Header.UserMetaData {
+						cpURLs.TargetContent.UserMetadata[metaDataKey] = metaDataVal
+					}
+				}
+
 				// Verify if previously copied, notify progress bar.
 				if isCopied(cpURLs.SourceContent.URL.String()) {
 					queueCh <- func() URLs {
@@ -373,7 +403,7 @@ func doCopySession(session *sessionV8) error {
 					}
 				} else {
 					queueCh <- func() URLs {
-						return doCopy(ctx, cpURLs, pg)
+						return doCopy(ctx, cpURLs, pg, encKeyDB)
 					}
 				}
 			}
@@ -430,11 +460,25 @@ loop:
 		}
 	} else {
 		if accntReader, ok := pg.(*accounter); ok {
-			console.Println(console.Colorize("Copy", accntReader.Stat().String()))
+			printMsg(accntReader.Stat())
 		}
 	}
 
 	return retErr
+}
+
+// validate the passed metadataString and populate the map
+func getMetaDataEntry(metadataString string) (map[string]string, *probe.Error) {
+	metaDataMap := make(map[string]string)
+	for _, metaData := range strings.Split(metadataString, ",") {
+		metaDataEntry := strings.Split(metaData, "=")
+		if len(metaDataEntry) == 2 {
+			metaDataMap[metaDataEntry[0]] = metaDataEntry[1]
+		} else {
+			return nil, probe.NewError(ErrInvalidMetadata)
+		}
+	}
+	return metaDataMap, nil
 }
 
 // mainCopy is the entry point for cp command.
@@ -443,6 +487,13 @@ func mainCopy(ctx *cli.Context) error {
 	encKeyDB, err := getEncKeys(ctx)
 	fatalIf(err, "Unable to parse encryption keys.")
 
+	// Parse metadata.
+	userMetaMap := make(map[string]string)
+	if ctx.String("attr") != "" {
+		userMetaMap, err = getMetaDataEntry(ctx.String("attr"))
+		fatalIf(err, "Unable to parse attribute %v", ctx.String("attr"))
+	}
+
 	// check 'copy' cli arguments.
 	checkCopySyntax(ctx, encKeyDB)
 
@@ -450,21 +501,24 @@ func mainCopy(ctx *cli.Context) error {
 	console.SetColor("Copy", color.New(color.FgGreen, color.Bold))
 
 	recursive := ctx.Bool("recursive")
-	olderThan := ctx.Int("older-than")
-	newerThan := ctx.Int("newer-than")
+	olderThan := ctx.String("older-than")
+	newerThan := ctx.String("newer-than")
 	storageClass := ctx.String("storage-class")
 	sseKeys := os.Getenv("MC_ENCRYPT_KEY")
 	if key := ctx.String("encrypt-key"); key != "" {
 		sseKeys = key
 	}
+	sse := ctx.String("encrypt")
 
 	session := newSessionV8()
 	session.Header.CommandType = "cp"
 	session.Header.CommandBoolFlags["recursive"] = recursive
-	session.Header.CommandIntFlags["older-than"] = olderThan
-	session.Header.CommandIntFlags["newer-than"] = newerThan
+	session.Header.CommandStringFlags["older-than"] = olderThan
+	session.Header.CommandStringFlags["newer-than"] = newerThan
 	session.Header.CommandStringFlags["storage-class"] = storageClass
 	session.Header.CommandStringFlags["encrypt-key"] = sseKeys
+	session.Header.CommandStringFlags["encrypt"] = sse
+	session.Header.UserMetaData = userMetaMap
 
 	var e error
 	if session.Header.RootPath, e = os.Getwd(); e != nil {
@@ -474,7 +528,7 @@ func mainCopy(ctx *cli.Context) error {
 
 	// extract URLs.
 	session.Header.CommandArgs = ctx.Args()
-	e = doCopySession(session)
+	e = doCopySession(session, encKeyDB)
 	session.Delete()
 
 	return e
